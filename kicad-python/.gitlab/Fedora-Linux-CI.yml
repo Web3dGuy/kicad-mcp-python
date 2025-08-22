@@ -1,0 +1,15 @@
+##########################################################################
+# Build KiCad-Python on Fedora
+##########################################################################
+build:
+  stage: build
+  image: $DEFAULT_FEDORA_IMAGE
+  before_script:
+    - git submodule update --init --depth 1
+    - dnf install -y protobuf-compiler poetry python3-virtualenv
+    - python3 -m venv env
+    - source env/bin/activate
+  script:
+    #- poetry build
+    - poetry install -v
+    - pytest
