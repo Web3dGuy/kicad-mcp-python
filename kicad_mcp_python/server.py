@@ -10,6 +10,7 @@ from typing import Callable, List
 from mcp.server.fastmcp import FastMCP
 
 from kicad_mcp_python.pcb.tools import ManipulationTools, AnalyzeTools
+from kicad_mcp_python.schematic.tools import SchematicManipulationTools, SchematicAnalyzeTools
 
 
 # Import context management
@@ -221,6 +222,10 @@ def create_server() -> FastMCP:
     # Create tool managers
     ManipulationTools.register_tools(mcp)
     AnalyzeTools.register_tools(mcp)
+    
+    # Register schematic tools
+    SchematicManipulationTools.register_tools(mcp)
+    SchematicAnalyzeTools.register_tools(mcp)
     register_cleanup = setup_graceful_shutdown(mcp)
     
     # Register KiCad-related cleanup handlers
