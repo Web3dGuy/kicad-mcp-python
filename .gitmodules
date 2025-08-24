@@ -1,4 +1,4 @@
 [submodule "kicad-python"]
 	path = kicad-python
-	url = https://gitlab.com/kicad/code/kicad-python
+	url = https://github.com/Web3dGuy/kicad-python.git
 	shallow = true
