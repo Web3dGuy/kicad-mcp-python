@@ -35,7 +35,8 @@ class BoardAnalyzer(ToolManager, PCBTool):
         Retrieves the comprehensive status of the current PCB board including all components and visual representation.
         
         This method collects information about all board items (footprints, tracks, vias, pads, etc.) 
-        and generates a visual representation of the current board state.
+        and generates a visual representation of the current board state. The board is automatically 
+        saved before generating the screenshot to ensure all changes are visible.
         
         Returns:
             list: A two-element list containing:
@@ -55,6 +56,13 @@ class BoardAnalyzer(ToolManager, PCBTool):
                 result[item_type] = [item for item in self.board.get_items(get_object_type(item_type))]
             except Exception as e:
                 result[item_type] = f'Not yet implemented, {str(e)}'
+        
+        # Auto-save the board before generating screenshot to ensure changes are visible
+        try:
+            self.board.save()
+        except Exception as e:
+            # Log the error but don't fail the entire operation
+            print(f"Warning: Auto-save failed: {str(e)}")
                 
         base64_image = self.pcb_converter.pcb_to_jpg_via_svg(
             boardname=self.board.name,

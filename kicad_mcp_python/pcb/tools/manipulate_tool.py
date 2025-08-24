@@ -2,6 +2,7 @@ from typing import Dict
 
 from ..pcbmodule import PCBTool
 from ...core.ActionFlowManager import ActionFlowManager
+from ...core.mcp_manager import ToolManager
 from ...utils.convert_proto import (
     BOARDITEM_TYPE_CONFIGS, 
     get_proto_class,
@@ -423,7 +424,28 @@ class RemoveItemFlowManager(ActionFlowManager):
     
     
 
+class SaveBoardTool(ToolManager, PCBTool):
+    """A class that manages saving the PCB board"""
     
+    def __init__(self, mcp: FastMCP):
+        super().__init__(mcp)
+        self.add_tool(self.save_board)
+        
+    def save_board(self):
+        """Save the current PCB board to disk
+        
+        This function saves the current PCB board using KiCad's save functionality.
+        After saving, it's recommended to call get_board_status to see updated screenshots.
+        
+        Returns:
+            str: Success message indicating the board was saved
+        """
+        try:
+            self.board.save()
+            return f"Successfully saved board: {self.board.name}"
+        except Exception as e:
+            return f"Failed to save board: {str(e)}"
+
     
 class ManipulationTools:
     
@@ -440,4 +462,5 @@ class ManipulationTools:
         EditItemFlowManager(mcp)
         MoveItemFlowManager(mcp)
         RemoveItemFlowManager(mcp)
+        SaveBoardTool(mcp)
         
