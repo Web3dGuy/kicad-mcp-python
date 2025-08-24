@@ -7,6 +7,7 @@ import io
 from dotenv import load_dotenv
 import base64
 from pathlib import Path
+from datetime import datetime
 
 # Load .env file
 load_dotenv()
@@ -40,7 +41,13 @@ class KiCadPCBConverter:
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as jpg_temp:
             jpg_path = jpg_temp.name
         
-        jpg_path_2 = 'test.jpg'            
+        # Create screenshots directory if it doesn't exist
+        screenshots_dir = Path(__file__).parent.parent.parent / "screenshots"
+        screenshots_dir.mkdir(exist_ok=True)
+        
+        # Create timestamped filename for permanent screenshot
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        permanent_jpg_path = screenshots_dir / f"{boardname}_{timestamp}.jpg"
 
         try:
             # Convert layers to comma-separated string
@@ -63,7 +70,14 @@ class KiCadPCBConverter:
             # Convert SVG to JPG
             png_data = cairosvg.svg2png(url=svg_path)
             image = Image.open(io.BytesIO(png_data))
-            image.convert('RGB').save(jpg_path, 'JPEG')
+            rgb_image = image.convert('RGB')
+            
+            # Save temporary file
+            rgb_image.save(jpg_path, 'JPEG')
+            
+            # Also save permanent screenshot
+            rgb_image.save(permanent_jpg_path, 'JPEG')
+            print(f"Screenshot saved to: {permanent_jpg_path}")
             
             with open(jpg_path, 'rb') as f:
                 jpg_data = f.read()
@@ -71,7 +85,7 @@ class KiCadPCBConverter:
             # Encode to Base64
             base64_data = base64.b64encode(jpg_data).decode('utf-8')
             if cleanup:
-                # Delete SVG temporary file
+                # Delete temporary files
                 os.unlink(svg_path)
                 os.unlink(jpg_path)
                 

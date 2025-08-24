@@ -109,10 +109,18 @@ PCB_PATHS=/path/to/your/project1.kicad_pcb,/path/to/your/project2.kicad_pcb
     Launch KiCad and enable the IPC server by selecting **Tools -> External Plugin -> Start Server**.
 
 3.  **Start the MCP Server**:
-    Start the MCP server with the following command:
+    
+    **For Production/Testing:**
     ```bash
     poetry run python main.py
     ```
+    
+    **For Development (with Hot Reload):**
+    ```bash
+    poetry run python dev_server.py
+    ```
+    
+    The development server automatically restarts when you make code changes, making development much more efficient. See [README-DEV.md](README-DEV.md) for detailed development instructions.
 
 The server is now waiting for a connection from an MCP client.
 

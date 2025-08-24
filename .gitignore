@@ -22,3 +22,9 @@ MANIFEST
 
 poetry.lock
 
+# Embedded git repositories (should be submodules)
+kicad-python/kicad/
+
+# Generated screenshots
+screenshots/
+
