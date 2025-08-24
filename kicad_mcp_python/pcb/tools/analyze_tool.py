@@ -10,6 +10,7 @@ from ..pcbmodule import PCBTool
 from ...core.mcp_manager import ToolManager
 
 from ...utils.kicad_cli import KiCadPCBConverter
+from ...utils.project_detector import get_project_detector
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent
@@ -27,7 +28,8 @@ class BoardAnalyzer(ToolManager, PCBTool):
         self.pcb_converter = KiCadPCBConverter()
         self.add_tool(self.get_board_status)        
         self.add_tool(self.get_items_by_type)        
-        self.add_tool(self.get_item_type_args_hint)        
+        self.add_tool(self.get_item_type_args_hint)
+        self.add_tool(self.get_project_summary)        
         
             
     def get_board_status(self):
@@ -106,6 +108,35 @@ class BoardAnalyzer(ToolManager, PCBTool):
         result = BOARDITEM_TYPE_CONFIGS[item_type]
         return result
     
+    def get_project_summary(self):
+        '''
+        Retrieves a comprehensive summary of all detected KiCad projects.
+        
+        This method scans configured project directories and provides information about
+        all detected KiCad projects, including which files are available and their status.
+        
+        Returns:
+            dict: Summary containing:
+                - total_projects: Number of detected projects
+                - projects_with_pcb: Count of projects with PCB files
+                - projects_with_schematic: Count of projects with schematic files  
+                - active_projects: Count of projects currently being edited
+                - project_details: Dictionary with detailed info for each project
+        '''
+        try:
+            detector = get_project_detector()
+            # Refresh to get latest project state
+            detector.refresh_projects()
+            return detector.get_project_summary()
+        except Exception as e:
+            return {
+                'error': f'Failed to get project summary: {str(e)}',
+                'total_projects': 0,
+                'projects_with_pcb': 0,
+                'projects_with_schematic': 0,
+                'active_projects': 0,
+                'project_details': {}
+            }
     
     
 class AnalyzeTools:

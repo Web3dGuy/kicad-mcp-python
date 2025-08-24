@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import base64
 from pathlib import Path
 from datetime import datetime
+from .project_detector import get_project_detector
 
 # Load .env file
 load_dotenv()
@@ -114,7 +115,8 @@ class KiCadPCBConverter:
 
     def get_pcb_path_by_name(self, boardname):
         """
-        Find and return the path corresponding to boardname from PCB_PATHS environment variable.
+        Find and return the path corresponding to boardname using the new project detection system.
+        Falls back to old PCB_PATHS method for backward compatibility.
         
         Args:
             boardname (str): PCB board filename to find (including extension)
@@ -122,11 +124,20 @@ class KiCadPCBConverter:
         Returns:
             str: Full path of the corresponding board, None if not found
         """
-        # Get PCB_PATHS from environment variable
+        # Try new project-based detection first
+        try:
+            detector = get_project_detector()
+            pcb_path = detector.find_pcb_path(boardname)
+            if pcb_path:
+                return str(pcb_path)
+        except Exception as e:
+            print(f"Project detection failed, falling back to PCB_PATHS: {e}")
+        
+        # Fallback to old PCB_PATHS method
         pcb_paths = os.getenv('PCB_PATHS')
         
         if not pcb_paths:
-            print("PCB_PATHS environment variable is not set.")
+            print("Neither PROJECT_PATHS nor PCB_PATHS environment variable is set.")
             return None
         
         # Convert comma-separated paths to list and remove whitespace
@@ -144,5 +155,5 @@ class KiCadPCBConverter:
             if filename == boardname:
                 return path
         
-        print(f"File '{boardname}' not found.")
+        print(f"File '{boardname}' not found in any configured paths.")
         return None
