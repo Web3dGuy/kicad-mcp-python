@@ -65,35 +65,96 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
         """
         Get basic schematic information using the new GetSchematicInfo API endpoint.
         
-        This demonstrates our proof-of-concept schematic API integration.
+        This tests the actual IPC connection to KiCad's schematic API.
         
         Returns:
             dict: Basic schematic information including project name, sheet count, etc.
         """
         try:
-            # This would call the new GetSchematicInfo API endpoint
-            # For the POC, we return the structure that the API would provide
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.common.types.base_types_pb2 import DocumentType
+            
+            # Debug: Test basic IPC connection first
+            if not hasattr(self, 'kicad'):
+                self.initialize_kicad()
+            
+            # Test basic connection with ping
+            try:
+                self.kicad.ping()
+                connection_test = "✅ Basic IPC connection working"
+            except Exception as ping_error:
+                return {
+                    "error": f"Basic IPC connection failed: {ping_error}",
+                    "suggestion": "Check if KiCad API is enabled in preferences"
+                }
+            
+            # Debug: Check what documents are open
+            try:
+                all_docs = self.kicad.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC)
+                doc_count = len(all_docs)
+                doc_info = f"Found {doc_count} schematic documents"
+            except Exception as doc_error:
+                return {
+                    "connection_test": connection_test,
+                    "error": f"Failed to get open documents: {doc_error}",
+                    "suggestion": "Document detection issue - may need different approach"
+                }
+            
+            # If no documents, try with a default document specifier anyway
+            if doc_count == 0:
+                return {
+                    "connection_test": connection_test,
+                    "document_detection": f"❌ {doc_info}",
+                    "error": "No schematic documents detected as open",
+                    "suggestion": "Try opening schematic in Eeschema first, or our document detection needs work",
+                    "debug_info": "IPC connection works but KiCad reports no open schematics"
+                }
+            
+            # Use the first document
+            doc_spec = all_docs[0]
+            
+            # Create GetSchematicInfo request
+            request = schematic_commands_pb2.GetSchematicInfo()
+            request.schematic.CopyFrom(doc_spec)
+            
+            # Send the actual IPC command to KiCad
+            response = self.send_schematic_command("GetSchematicInfo", request)
+            
+            # Return the actual data from KiCad
             result = {
+                "connection_test": connection_test,
+                "document_detection": f"✅ {doc_info}",
                 "api_endpoint": "GetSchematicInfo",
-                "implementation_status": "Protocol buffers generated successfully",
-                "expected_response": {
-                    "project_name": "string",
-                    "sheet_count": "int32",
-                    "symbol_count": "int32", 
-                    "net_count": "int32",
-                    "sheet_names": ["string array"]
-                },
-                "note": "Ready for integration with KiCad IPC-API"
+                "connection_status": "SUCCESS - Connected to KiCad IPC server",
+                "project_name": response.project_name,
+                "sheet_count": response.sheet_count,
+                "symbol_count": response.symbol_count,
+                "net_count": response.net_count,
+                "sheet_names": list(response.sheet_names),
+                "test_result": "✅ Full IPC connection working correctly"
             }
             return result
+            
         except Exception as e:
-            return {"error": f"Failed to get schematic info: {str(e)}"}
+            return {
+                "api_endpoint": "GetSchematicInfo", 
+                "connection_status": "FAILED - IPC connection error",
+                "error": f"Failed to get schematic info: {str(e)}",
+                "troubleshooting": [
+                    "1. Ensure KiCad is running with a schematic open",
+                    "2. Check IPC API is enabled in KiCad preferences",
+                    "3. Verify schematic document is active in Eeschema",
+                    "4. Try restarting KiCad if needed"
+                ],
+                "test_result": "❌ IPC connection not working"
+            }
 
     def get_schematic_items(self, item_types: str = "all"):
         """
         Get schematic items using the new GetSchematicItems API endpoint.
         
-        This demonstrates retrieving specific schematic elements like wires, junctions, and symbols.
+        This retrieves actual schematic elements like wires, junctions, and symbols from KiCad.
         
         Args:
             item_types: Types of items to retrieve (default: "all")
@@ -102,25 +163,57 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             dict: Dictionary containing schematic items information
         """
         try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {"error": "No schematic document available"}
+            
+            # Create GetSchematicItems request
+            request = schematic_commands_pb2.GetSchematicItems()
+            request.schematic.CopyFrom(doc_spec)
+            # Leave item_ids empty to get all items
+            # Leave types empty to get all types
+            
+            # Send the actual IPC command to KiCad
+            response = self.send_schematic_command("GetSchematicItems", request)
+            
+            # Process the response
+            items = []
+            for item in response.items:
+                item_data = {
+                    "type": item.type_url,
+                    "data_available": True
+                }
+                items.append(item_data)
+            
             result = {
-                "api_endpoint": "GetSchematicItems", 
+                "api_endpoint": "GetSchematicItems",
+                "connection_status": "SUCCESS - Connected to KiCad IPC server", 
                 "requested_types": item_types,
-                "implementation_status": "Protocol buffers generated successfully",
-                "supported_types": [
-                    "Junction - Connection points",
-                    "Wire - Electrical wires", 
-                    "Bus - Bus segments",
-                    "Line - Graphical lines",
-                    "LocalLabel - Local labels",
-                    "GlobalLabel - Global labels",
-                    "HierarchicalLabel - Hierarchical labels",
-                    "DirectiveLabel - Directive labels"
-                ],
-                "note": "Ready for integration with KiCad IPC-API"
+                "total_items": response.total_count,
+                "items_retrieved": len(items),
+                "items": items[:10] if len(items) > 10 else items,  # Limit display
+                "note": f"Retrieved {len(items)} items from schematic",
+                "test_result": "✅ GetSchematicItems working correctly"
             }
             return result
+            
         except Exception as e:
-            return {"error": f"Failed to get schematic items: {str(e)}"}
+            return {
+                "api_endpoint": "GetSchematicItems",
+                "connection_status": "FAILED - IPC connection error", 
+                "error": f"Failed to get schematic items: {str(e)}",
+                "troubleshooting": [
+                    "1. Ensure KiCad is running with a schematic open",
+                    "2. Enable IPC API: Tools → External Plugins → Start Plugin Server", 
+                    "3. Verify schematic has symbols/wires to retrieve",
+                    "4. Check Python bindings are up to date"
+                ],
+                "test_result": "❌ GetSchematicItems not working"
+            }
 
 
 class SchematicAnalyzeTools:

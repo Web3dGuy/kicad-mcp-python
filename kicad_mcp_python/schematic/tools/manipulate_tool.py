@@ -20,6 +20,11 @@ class SchematicManipulator(ToolManager, SchematicTool):
         self.add_tool(self.create_schematic_item_step_1)
         self.add_tool(self.create_schematic_item_step_2) 
         self.add_tool(self.create_schematic_item_step_3)
+        
+        # Draw wire workflow (Phase 1A implementation)
+        self.add_tool(self.draw_wire_step_1)
+        self.add_tool(self.draw_wire_step_2)
+        self.add_tool(self.draw_wire_step_3)
 
     def create_schematic_item_step_1(self):
         """
@@ -204,6 +209,185 @@ class SchematicManipulator(ToolManager, SchematicTool):
                 "error": f"Failed to create schematic item: {str(e)}",
                 "item_type": item_type,
                 "args": args
+            }
+    
+    def draw_wire_step_1(self):
+        """
+        Entrance tool to draw a wire between two points in the schematic.
+        This uses the new DrawWire API endpoint for direct wire creation.
+        
+        Returns:
+            dict: Information about the DrawWire workflow
+            
+        Next action:
+            draw_wire_step_2
+        """
+        return {
+            "workflow": "Draw Wire - Step 1 of 3",
+            "description": "Draw an electrical wire between two points",
+            "purpose": "Creates a wire segment for electrical connections",
+            "api_endpoint": "DrawWire (Phase 1A implementation)",
+            "parameters_overview": {
+                "start_point": "Starting position of the wire",
+                "end_point": "Ending position of the wire",
+                "width": "Optional wire width (default: 0 = use standard width)"
+            },
+            "coordinate_system": "Positions are in nanometers (1mm = 1,000,000 nm)",
+            "next_step": "Call draw_wire_step_2() to see parameter details",
+            "example": "draw_wire_step_2()"
+        }
+    
+    def draw_wire_step_2(self):
+        """
+        Returns the parameter requirements for drawing a wire.
+        
+        Returns:
+            dict: Parameter specifications for DrawWire
+            
+        Next action:
+            draw_wire_step_3
+        """
+        return {
+            "workflow": "Draw Wire - Step 2 of 3",
+            "description": "Specify wire endpoints",
+            "required_parameters": {
+                "start_point": {
+                    "type": "dict with x_nm and y_nm",
+                    "description": "Starting position in nanometers",
+                    "example": {"x_nm": 50800000, "y_nm": 50800000}  # 50.8mm, 50.8mm
+                },
+                "end_point": {
+                    "type": "dict with x_nm and y_nm", 
+                    "description": "Ending position in nanometers",
+                    "example": {"x_nm": 101600000, "y_nm": 50800000}  # 101.6mm, 50.8mm
+                }
+            },
+            "optional_parameters": {
+                "width": {
+                    "type": "int",
+                    "description": "Wire width in nanometers (0 = default)",
+                    "default": 0,
+                    "example": 150000  # 0.15mm
+                }
+            },
+            "grid_alignment": "Wires should align to schematic grid (typically 1.27mm / 1270000nm)",
+            "next_step": "Call draw_wire_step_3(args) with your parameters",
+            "example_call": "draw_wire_step_3({'start_point': {'x_nm': 50800000, 'y_nm': 50800000}, 'end_point': {'x_nm': 101600000, 'y_nm': 50800000}})"
+        }
+    
+    def draw_wire_step_3(self, args: dict):
+        """
+        Draws a wire between the specified points using the DrawWire API.
+        
+        Args:
+            args (dict): Wire parameters containing:
+                - start_point: dict with x_nm and y_nm
+                - end_point: dict with x_nm and y_nm
+                - width (optional): wire width in nanometers
+        
+        Returns:
+            dict: Result of the wire drawing operation
+            
+        Next action:
+            get_schematic_status (to verify the wire was created)
+        """
+        try:
+            # Validate required parameters
+            if "start_point" not in args or "end_point" not in args:
+                return {
+                    "error": "Missing required parameters",
+                    "required": ["start_point", "end_point"],
+                    "provided": list(args.keys()),
+                    "suggestion": "Use draw_wire_step_2() to see parameter requirements"
+                }
+            
+            start = args["start_point"]
+            end = args["end_point"]
+            
+            # Validate coordinate structure
+            if not all(k in start for k in ["x_nm", "y_nm"]):
+                return {
+                    "error": "Invalid start_point structure",
+                    "expected": {"x_nm": "integer", "y_nm": "integer"},
+                    "provided": start
+                }
+            
+            if not all(k in end for k in ["x_nm", "y_nm"]):
+                return {
+                    "error": "Invalid end_point structure",
+                    "expected": {"x_nm": "integer", "y_nm": "integer"},
+                    "provided": end
+                }
+            
+            # Get wire width (optional)
+            width = args.get("width", 0)
+            
+            # Call the DrawWire API
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.common.types import base_types_pb2
+            
+            request = schematic_commands_pb2.DrawWire()
+            
+            # Set start point
+            request.start_point.x_nm = start["x_nm"]
+            request.start_point.y_nm = start["y_nm"]
+            
+            # Set end point
+            request.end_point.x_nm = end["x_nm"]
+            request.end_point.y_nm = end["y_nm"]
+            
+            # Set width if provided
+            if width > 0:
+                request.width = width
+            
+            # Get the schematic document specifier
+            doc_spec = self.get_active_schematic_document()
+            if doc_spec:
+                request.schematic.CopyFrom(doc_spec)
+            
+            # Send the request to KiCad
+            response = self.send_schematic_command("DrawWire", request)
+            
+            if response and hasattr(response, 'wire_id'):
+                return {
+                    "workflow": "Draw Wire - Step 3 of 3",
+                    "status": "success",
+                    "operation": "Wire created",
+                    "wire_id": response.wire_id.value if response.wire_id.value else None,
+                    "start_point": f"({start['x_nm']/1000000:.1f}mm, {start['y_nm']/1000000:.1f}mm)",
+                    "end_point": f"({end['x_nm']/1000000:.1f}mm, {end['y_nm']/1000000:.1f}mm)",
+                    "length_mm": ((end['x_nm'] - start['x_nm'])**2 + (end['y_nm'] - start['y_nm'])**2)**0.5 / 1000000,
+                    "next_actions": [
+                        "get_schematic_status() to verify wire creation",
+                        "draw_wire_step_1() to draw another wire",
+                        "break_wire_step_1() to break wire at junction (coming soon)"
+                    ]
+                }
+            else:
+                error_msg = response.error if response and hasattr(response, 'error') else "Unknown error"
+                return {
+                    "workflow": "Draw Wire - Step 3 of 3",
+                    "status": "failed",
+                    "error": error_msg,
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Verify IPC API server is enabled in KiCad",
+                        "Check that coordinates are within schematic bounds",
+                        "Ensure coordinates align to schematic grid"
+                    ]
+                }
+                
+        except ImportError as e:
+            return {
+                "error": "Failed to import protocol buffer modules",
+                "details": str(e),
+                "suggestion": "Ensure Python bindings have been generated (run kicad-python/build.py)"
+            }
+        except Exception as e:
+            return {
+                "error": f"Failed to draw wire: {str(e)}",
+                "args": args,
+                "suggestion": "Check KiCad connection and try again"
             }
 
 
