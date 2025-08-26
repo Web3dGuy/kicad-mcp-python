@@ -20,6 +20,8 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
         self.add_tool(self.get_schematic_status)
         self.add_tool(self.get_schematic_info)
         self.add_tool(self.get_schematic_items)
+        self.add_tool(self.get_symbol_positions)
+        self.add_tool(self.get_symbol_pins)
 
     def get_schematic_status(self):
         """
@@ -214,6 +216,241 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                 ],
                 "test_result": "❌ GetSchematicItems not working"
             }
+
+    def get_symbol_positions(self):
+        """
+        Get all symbols in the schematic with their exact positions and pin data.
+        
+        This uses the enhanced GetSchematicItems API that now returns symbol positions
+        and embedded pin information for precise coordinate-based wire placement.
+        
+        Returns:
+            dict: Dictionary containing all symbols with positions and pins
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {"error": "No schematic document available"}
+            
+            # Create GetSchematicItems request
+            request = schematic_commands_pb2.GetSchematicItems()
+            request.schematic.CopyFrom(doc_spec)
+            # Leave empty to get all items (symbols, wires, etc.)
+            
+            # Send the actual IPC command to KiCad
+            response = self.send_schematic_command("GetSchematicItems", request)
+            
+            # Parse the response to extract symbols
+            symbols = []
+            other_items = []
+            
+            for item in response.items:
+                if item.type_url.endswith('Symbol'):
+                    # Unpack Symbol message
+                    symbol = schematic_types_pb2.Symbol()
+                    item.Unpack(symbol)
+                    
+                    symbol_data = {
+                        "id": symbol.id.value,
+                        "reference": symbol.reference,
+                        "value": symbol.value,
+                        "library_id": symbol.library_id,
+                        "position": {
+                            "x_nm": symbol.position.x_nm,
+                            "y_nm": symbol.position.y_nm
+                        },
+                        "unit": symbol.unit,
+                        "body_style": symbol.body_style,
+                        "orientation_degrees": symbol.orientation.value_degrees,
+                        "mirrored_x": symbol.mirrored_x,
+                        "mirrored_y": symbol.mirrored_y,
+                        "pin_count": len(symbol.pins),
+                        "pins": []
+                    }
+                    
+                    # Add pin information
+                    for pin in symbol.pins:
+                        pin_data = {
+                            "id": pin.id.value,
+                            "name": pin.name,
+                            "number": pin.number,
+                            "position": {
+                                "x_nm": pin.position.x_nm,
+                                "y_nm": pin.position.y_nm
+                            },
+                            "electrical_type": pin.electrical_type,
+                            "orientation": pin.orientation,
+                            "length": pin.length
+                        }
+                        symbol_data["pins"].append(pin_data)
+                    
+                    symbols.append(symbol_data)
+                else:
+                    # Track other item types
+                    other_items.append({
+                        "type": item.type_url,
+                        "available": True
+                    })
+            
+            result = {
+                "api_endpoint": "GetSchematicItems (Enhanced)",
+                "connection_status": "SUCCESS - Symbol positions retrieved",
+                "total_items": response.total_count,
+                "symbol_count": len(symbols),
+                "other_items_count": len(other_items),
+                "symbols": symbols,
+                "coordinate_system": "nanometers (nm)",
+                "test_result": "✅ Symbol positions available for precise wire placement"
+            }
+            
+            if len(symbols) == 0:
+                result["warning"] = "No symbols found - ensure schematic has components placed"
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "GetSchematicItems (Enhanced)",
+                "connection_status": "FAILED - Symbol position retrieval error",
+                "error": f"Failed to get symbol positions: {str(e)}",
+                "troubleshooting": [
+                    "1. Ensure schematic has symbols placed",
+                    "2. Check if KiCad API has been rebuilt with new Symbol types",
+                    "3. Verify Python bindings include Symbol and Pin message types",
+                    "4. Try restarting KiCad with schematic open"
+                ],
+                "test_result": "❌ Symbol position retrieval not working"
+            }
+
+    def get_symbol_pins(self, symbol_id: str):
+        """
+        Get detailed pin information for a specific symbol by ID.
+        
+        This uses the new GetSymbolPins API endpoint to retrieve exact pin positions
+        and properties for precise wire connection.
+        
+        Args:
+            symbol_id: The UUID of the symbol to query pins for
+            
+        Returns:
+            dict: Dictionary containing pin positions and properties for the symbol
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.common.types import base_types_pb2
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {"error": "No schematic document available"}
+            
+            # Create GetSymbolPins request
+            request = schematic_commands_pb2.GetSymbolPins()
+            request.schematic.CopyFrom(doc_spec)
+            request.symbol_id.value = symbol_id
+            
+            # Send the actual IPC command to KiCad
+            response = self.send_schematic_command("GetSymbolPins", request)
+            
+            # Check for errors
+            if response.error:
+                return {
+                    "api_endpoint": "GetSymbolPins",
+                    "connection_status": "ERROR - API returned error",
+                    "symbol_id": symbol_id,
+                    "error": response.error,
+                    "test_result": "❌ Symbol not found or other API error"
+                }
+            
+            # Parse pin data
+            pins = []
+            for pin in response.pins:
+                pin_data = {
+                    "id": pin.id.value,
+                    "name": pin.name,
+                    "number": pin.number,
+                    "position": {
+                        "x_nm": pin.position.x_nm,
+                        "y_nm": pin.position.y_nm,
+                        "x_mm": pin.position.x_nm / 1_000_000,
+                        "y_mm": pin.position.y_nm / 1_000_000
+                    },
+                    "electrical_type": pin.electrical_type,
+                    "electrical_type_name": self._get_pin_type_name(pin.electrical_type),
+                    "orientation": pin.orientation,
+                    "orientation_name": self._get_pin_orientation_name(pin.orientation),
+                    "length": pin.length,
+                    "length_mm": pin.length / 1_000_000
+                }
+                pins.append(pin_data)
+            
+            result = {
+                "api_endpoint": "GetSymbolPins",
+                "connection_status": "SUCCESS - Pin positions retrieved",
+                "symbol_id": symbol_id,
+                "symbol_reference": response.reference,
+                "symbol_position": {
+                    "x_nm": response.symbol_position.x_nm,
+                    "y_nm": response.symbol_position.y_nm,
+                    "x_mm": response.symbol_position.x_nm / 1_000_000,
+                    "y_mm": response.symbol_position.y_nm / 1_000_000
+                },
+                "pin_count": len(pins),
+                "pins": pins,
+                "coordinate_system": "nanometers (nm) with mm conversion",
+                "test_result": "✅ Symbol pins available for precise wire connection"
+            }
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "GetSymbolPins",
+                "connection_status": "FAILED - Pin position retrieval error",
+                "symbol_id": symbol_id,
+                "error": f"Failed to get symbol pins: {str(e)}",
+                "troubleshooting": [
+                    "1. Verify symbol_id is correct (use get_symbol_positions first)",
+                    "2. Check if KiCad API has GetSymbolPins implemented",
+                    "3. Ensure Python bindings include GetSymbolPins message types",
+                    "4. Try with a different symbol ID"
+                ],
+                "test_result": "❌ Symbol pin retrieval not working"
+            }
+    
+    def _get_pin_type_name(self, pin_type):
+        """Convert pin electrical type enum to readable name."""
+        type_names = {
+            0: "UNKNOWN",
+            1: "INPUT", 
+            2: "OUTPUT",
+            3: "BIDIRECTIONAL",
+            4: "TRI_STATE",
+            5: "PASSIVE",
+            6: "UNSPECIFIED",
+            7: "POWER_IN",
+            8: "POWER_OUT", 
+            9: "OPEN_COLLECTOR",
+            10: "OPEN_EMITTER",
+            11: "NO_CONNECT"
+        }
+        return type_names.get(pin_type, f"UNKNOWN({pin_type})")
+    
+    def _get_pin_orientation_name(self, orientation):
+        """Convert pin orientation to readable name."""
+        orientations = {
+            0: "RIGHT",
+            90: "UP", 
+            180: "LEFT",
+            270: "DOWN"
+        }
+        return orientations.get(orientation, f"ANGLE({orientation})")
 
 
 class SchematicAnalyzeTools:
