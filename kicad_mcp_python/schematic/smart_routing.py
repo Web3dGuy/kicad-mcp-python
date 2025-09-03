@@ -133,64 +133,95 @@ class SmartRoutingEngine:
         
     def compute_break_point(self, start: Position, end: Position, 
                           mode: RoutingMode = RoutingMode.MANHATTAN,
-                          prefer_horizontal: bool = False) -> Position:
+                          prefer_horizontal: bool = False,
+                          prefer_vertical: bool = False) -> Position:
         """
         Port of KiCad's computeBreakPoint() function from sch_line_wire_bus_tool.cpp:470
         
         Determines optimal intermediate point for L-shaped Manhattan routing.
+        This is the ACTUAL KiCad algorithm, not a simplified version.
         
         Args:
             start: Starting position
             end: Ending position  
             mode: Routing mode (Manhattan, 45-degree, etc.)
             prefer_horizontal: Whether to prefer horizontal first segment
+            prefer_vertical: Whether to prefer vertical first segment
             
         Returns:
             Optimal break point for two-segment routing
         """
         delta = end - start
+        x_dir = 1 if delta.x_nm > 0 else -1
+        y_dir = 1 if delta.y_nm > 0 else -1
         
         if mode == RoutingMode.DIRECT:
             # Direct routing - no break point needed
             return end
             
-        elif mode == RoutingMode.MANHATTAN:
-            # Manhattan routing - choose break point for optimal L-shape
-            if prefer_horizontal:
-                # Horizontal first, then vertical
-                return Position(end.x_nm, start.y_nm)
-            else:
-                # Choose based on distance - match KiCad's logic
-                if abs(delta.x_nm) < abs(delta.y_nm):
-                    # Vertical first (smaller horizontal distance)
-                    return Position(start.x_nm, end.y_nm)
-                else:
-                    # Horizontal first (smaller vertical distance)
-                    return Position(end.x_nm, start.y_nm)
-                    
-        elif mode == RoutingMode.ANGLE_45:
-            # 45-degree routing - create diagonal + orthogonal segments
-            # Simplified implementation - full 45-degree logic is complex
-            abs_dx = abs(delta.x_nm)
-            abs_dy = abs(delta.y_nm)
-            
-            if abs_dx > abs_dy:
-                # More horizontal - diagonal then horizontal
-                diag_len = abs_dy
-                return Position(
-                    start.x_nm + (diag_len if delta.x_nm > 0 else -diag_len),
-                    end.y_nm
-                )
-            else:
-                # More vertical - diagonal then vertical  
-                diag_len = abs_dx
-                return Position(
-                    end.x_nm,
-                    start.y_nm + (diag_len if delta.y_nm > 0 else -diag_len)
-                )
+        # Initialize midpoint
+        midpoint = Position(0, 0)
         
-        # Default to Manhattan horizontal-first
-        return Position(end.x_nm, start.y_nm)
+        # Define breakVertical lambda equivalent
+        def break_vertical():
+            nonlocal midpoint
+            if mode == RoutingMode.ANGLE_45:
+                # 45-degree routing vertical break
+                midpoint.x_nm = start.x_nm
+                midpoint.y_nm = end.y_nm - y_dir * abs(delta.x_nm)
+            else:
+                # Manhattan vertical break
+                midpoint.x_nm = start.x_nm
+                midpoint.y_nm = end.y_nm
+        
+        # Define breakHorizontal lambda equivalent  
+        def break_horizontal():
+            nonlocal midpoint
+            if mode == RoutingMode.ANGLE_45:
+                # 45-degree routing horizontal break
+                midpoint.x_nm = end.x_nm - x_dir * abs(delta.y_nm)
+                midpoint.y_nm = start.y_nm
+            else:
+                # Manhattan horizontal break
+                midpoint.x_nm = end.x_nm
+                midpoint.y_nm = start.y_nm
+        
+        # Apply KiCad's preference logic
+        if prefer_vertical:
+            break_vertical()
+        elif prefer_horizontal:
+            break_horizontal()
+        else:
+            # KiCad's default logic: choose based on smaller dimension
+            if abs(delta.x_nm) < abs(delta.y_nm):
+                break_vertical()
+            else:
+                break_horizontal()
+        
+        # For 45-degree mode, check if we need to adjust based on direction
+        if mode == RoutingMode.ANGLE_45:
+            delta_midpoint = midpoint - start
+            
+            # Check for invalid 45-degree configurations and fall back to distance-based
+            if ((delta_midpoint.x_nm > 0) != (delta.x_nm > 0)) or \
+               ((delta_midpoint.y_nm > 0) != (delta.y_nm > 0)):
+                # Reset preferences and use distance-based selection
+                prefer_vertical = False
+                prefer_horizontal = False
+                
+                if abs(delta.x_nm) < abs(delta.y_nm):
+                    break_vertical()
+                else:
+                    break_horizontal()
+        
+        # Final fallback - if no preferences set, use distance-based
+        if not prefer_horizontal and not prefer_vertical:
+            if abs(delta.x_nm) < abs(delta.y_nm):
+                break_vertical() 
+            else:
+                break_horizontal()
+                
+        return midpoint
     
     def generate_manhattan_path(self, start_pin: Pin, end_pin: Pin, 
                               avoid_components: List[Symbol] = None) -> RoutingPath:
@@ -209,14 +240,15 @@ class SmartRoutingEngine:
         start_pos = start_pin.get_connection_point()
         end_pos = end_pin.get_connection_point()
         
-        # Determine if we should prefer horizontal based on pin orientations
-        prefer_horizontal = self._should_prefer_horizontal(start_pin, end_pin)
+        # Determine routing preferences based on pin orientations
+        prefer_horizontal, prefer_vertical = self._get_routing_preferences(start_pin, end_pin)
         
-        # Compute optimal break point using KiCad's algorithm
+        # Compute optimal break point using KiCad's actual algorithm
         break_point = self.compute_break_point(
             start_pos, end_pos, 
             RoutingMode.MANHATTAN, 
-            prefer_horizontal
+            prefer_horizontal,
+            prefer_vertical
         )
         
         # Create two-segment Manhattan path
@@ -241,26 +273,47 @@ class SmartRoutingEngine:
         
         return path
     
-    def _should_prefer_horizontal(self, start_pin: Pin, end_pin: Pin) -> bool:
+    def _get_routing_preferences(self, start_pin: Pin, end_pin: Pin) -> tuple[bool, bool]:
         """
-        Determine routing direction preference based on pin orientations.
+        Determine routing direction preferences based on pin orientations and KiCad logic.
         
-        This implements electrical engineering best practices:
-        - Pins facing each other prefer direct connection
-        - Power pins prefer horizontal routing (conventional)
-        - Signal pins optimize for shortest path
+        This implements KiCad's professional routing preferences:
+        - Pin orientations determine approach angles
+        - Aligned pins get direct routing preferences
+        - Sheet pin connections force horizontal routing
+        - Default to distance-optimized routing
+        
+        Returns:
+            (prefer_horizontal, prefer_vertical) tuple
         """
-        # If pins are horizontally aligned, prefer horizontal
+        # Check for alignment - if pins are aligned, prefer that direction
         if abs(start_pin.position.y_nm - end_pin.position.y_nm) < self.grid_size_nm:
-            return True
+            # Horizontally aligned - prefer horizontal routing
+            return (True, False)
             
-        # If pins are vertically aligned, prefer vertical  
         if abs(start_pin.position.x_nm - end_pin.position.x_nm) < self.grid_size_nm:
-            return False
+            # Vertically aligned - prefer vertical routing  
+            return (False, True)
+        
+        # Check pin orientations for smart approach angles
+        # Pin orientation: 0=East, 1=North, 2=West, 3=South
+        start_is_horizontal = start_pin.orientation in [0, 2]  # East or West
+        end_is_horizontal = end_pin.orientation in [0, 2]      # East or West
+        
+        # If both pins are horizontally oriented, prefer vertical first to connect properly
+        if start_is_horizontal and end_is_horizontal:
+            return (False, True)
             
-        # Default to optimizing for shorter first segment
-        delta = end_pin.position - start_pin.position
-        return abs(delta.x_nm) > abs(delta.y_nm)
+        # If both pins are vertically oriented, prefer horizontal first to connect properly
+        start_is_vertical = start_pin.orientation in [1, 3]    # North or South
+        end_is_vertical = end_pin.orientation in [1, 3]        # North or South
+        
+        if start_is_vertical and end_is_vertical:
+            return (True, False)
+        
+        # Mixed orientations - use KiCad's distance-based logic as default
+        # This will be handled by the algorithm itself (no strong preference)
+        return (False, False)
     
     def find_routing_anchors(self, position: Position, symbols: List[Symbol]) -> List[RoutingAnchor]:
         """

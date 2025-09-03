@@ -1,2 +1,3 @@
 from .analyze_tool import SchematicAnalyzeTools
 from .manipulate_tool import SchematicManipulationTools
+from .smart_routing_tool import SchematicSmartRoutingTools

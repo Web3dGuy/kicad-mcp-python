@@ -49,7 +49,7 @@ class SmartWireTool:
     def smart_draw_wire_between_pins(self, 
                                    start_symbol_id: str, start_pin_number: str,
                                    end_symbol_id: str, end_pin_number: str,
-                                   symbols_data: List[Dict[str, Any]],
+                                   symbols_data,
                                    routing_mode: str = "manhattan") -> Dict[str, Any]:
         """
         Draw intelligent wire between two specific pins.
@@ -77,12 +77,26 @@ class SmartWireTool:
             }
             routing_mode_enum = mode_map.get(routing_mode, RoutingMode.MANHATTAN)
             
+            # Handle different formats of symbols_data
+            if isinstance(symbols_data, dict) and 'symbols' in symbols_data:
+                # symbols_data is the full response from get_symbol_positions() 
+                actual_symbols = symbols_data['symbols']
+            elif isinstance(symbols_data, list):
+                # symbols_data is already the symbols list
+                actual_symbols = symbols_data
+            else:
+                return {
+                    "success": False,
+                    "error": "Invalid symbols_data format - expected dict with 'symbols' key or list of symbols",
+                    "routing_mode": routing_mode
+                }
+            
             # Find and validate pins
             start_pin, start_symbol = self._find_pin_in_symbols(
-                start_symbol_id, start_pin_number, symbols_data
+                start_symbol_id, start_pin_number, actual_symbols
             )
             end_pin, end_symbol = self._find_pin_in_symbols(
-                end_symbol_id, end_pin_number, symbols_data
+                end_symbol_id, end_pin_number, actual_symbols
             )
             
             if not start_pin:
@@ -101,7 +115,7 @@ class SmartWireTool:
             
             # Convert symbols to routing format and update boundary manager
             all_symbols = []
-            for symbol_data in symbols_data:
+            for symbol_data in actual_symbols:
                 symbol = self.routing_engine.convert_mcp_symbol_to_routing_symbol(symbol_data)
                 all_symbols.append(symbol)
                 
@@ -182,7 +196,7 @@ class SmartWireTool:
     def preview_smart_routing(self, 
                             start_symbol_id: str, start_pin_number: str,
                             end_symbol_id: str, end_pin_number: str,
-                            symbols_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+                            symbols_data) -> Dict[str, Any]:
         """
         Preview smart routing path without creating wires.
         
@@ -222,7 +236,7 @@ class SmartWireTool:
     def analyze_routing_options(self,
                               start_symbol_id: str, start_pin_number: str,
                               end_symbol_id: str, end_pin_number: str,
-                              symbols_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+                              symbols_data) -> Dict[str, Any]:
         """
         Analyze multiple routing options and compare them.
         
@@ -273,7 +287,7 @@ class SmartWireTool:
         }
     
     def _find_pin_in_symbols(self, symbol_id: str, pin_number: str, 
-                           symbols_data: List[Dict[str, Any]]) -> tuple[Optional[Pin], Optional[Symbol]]:
+                           symbols_data) -> tuple[Optional[Pin], Optional[Symbol]]:
         """Find specific pin in symbol data"""
         for symbol_data in symbols_data:
             if symbol_data["id"] == symbol_id:

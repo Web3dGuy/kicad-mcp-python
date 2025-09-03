@@ -22,6 +22,10 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
         self.add_tool(self.get_schematic_items)
         self.add_tool(self.get_symbol_positions)
         self.add_tool(self.get_symbol_pins)
+        
+        # Document management tools
+        self.add_tool(self.save_schematic)
+        self.add_tool(self.delete_items)
 
     def get_schematic_status(self):
         """
@@ -451,6 +455,176 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             270: "DOWN"
         }
         return orientations.get(orientation, f"ANGLE({orientation})")
+    
+    def save_schematic(self):
+        """
+        Save the current schematic document.
+        
+        This uses the SaveDocument API endpoint to save the active schematic to disk.
+        
+        Returns:
+            dict: Result of the save operation
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.common.commands import editor_commands_pb2
+            from kipy.proto.common.types.base_types_pb2 import DocumentType
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # Create SaveDocument request
+            request = editor_commands_pb2.SaveDocument()
+            request.document.CopyFrom(doc_spec)
+            
+            # Send the request to KiCad
+            response = self.send_editor_command("SaveDocument", request)
+            
+            return {
+                "api_endpoint": "SaveDocument",
+                "connection_status": "SUCCESS - Schematic saved",
+                "operation": "Save schematic",
+                "document_type": "Schematic",
+                "result": "✅ Schematic saved successfully",
+                "next_actions": [
+                    "get_schematic_status() to verify save completed",
+                    "Continue editing or create additional items"
+                ]
+            }
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "SaveDocument",
+                "connection_status": "FAILED - Save operation error",
+                "error": f"Failed to save schematic: {str(e)}",
+                "troubleshooting": [
+                    "1. Ensure KiCad is running with write permissions",
+                    "2. Check that schematic file is not read-only",
+                    "3. Verify there's enough disk space",
+                    "4. Try manual save in KiCad first"
+                ],
+                "test_result": "❌ Save operation not working"
+            }
+    
+    def delete_items(self, item_ids: list[str]):
+        """
+        Delete items from the schematic by their IDs.
+        
+        This uses the DeleteItems API endpoint to remove schematic elements.
+        
+        Args:
+            item_ids: List of item ID strings to delete
+            
+        Returns:
+            dict: Result of the deletion operation
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.common.commands import editor_commands_pb2
+            from kipy.proto.common.types import base_types_pb2
+            
+            if not item_ids or len(item_ids) == 0:
+                return {
+                    "error": "No item IDs provided",
+                    "required": "List of item ID strings to delete",
+                    "example": "delete_items(['item-id-1', 'item-id-2'])"
+                }
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # Create DeleteItems request
+            request = editor_commands_pb2.DeleteItems()
+            request.header.document.CopyFrom(doc_spec)
+            
+            # Add item IDs to delete
+            for item_id in item_ids:
+                kiid = base_types_pb2.KIID()
+                kiid.value = item_id
+                request.item_ids.append(kiid)
+            
+            # Send the request to KiCad
+            response = self.send_editor_command("DeleteItems", request)
+            
+            # Process the response
+            if response and hasattr(response, 'deleted_items'):
+                successful_deletions = []
+                failed_deletions = []
+                
+                for result in response.deleted_items:
+                    if hasattr(result, 'status'):
+                        if result.status == 1:  # IDS_OK
+                            successful_deletions.append(result.id.value)
+                        else:
+                            failed_deletions.append({
+                                "id": result.id.value,
+                                "status": result.status,
+                                "reason": self._get_deletion_status_name(result.status)
+                            })
+                
+                return {
+                    "api_endpoint": "DeleteItems",
+                    "connection_status": "SUCCESS - Items deleted",
+                    "operation": "Delete schematic items",
+                    "items_requested": len(item_ids),
+                    "items_deleted": len(successful_deletions),
+                    "items_failed": len(failed_deletions),
+                    "successful_deletions": successful_deletions,
+                    "failed_deletions": failed_deletions if failed_deletions else None,
+                    "result": f"✅ {len(successful_deletions)}/{len(item_ids)} items deleted successfully",
+                    "next_actions": [
+                        "get_schematic_status() to verify deletions",
+                        "save_schematic() to save changes"
+                    ]
+                }
+            else:
+                return {
+                    "api_endpoint": "DeleteItems",
+                    "connection_status": "FAILED - No response from deletion",
+                    "error": "No deletion results returned from KiCad",
+                    "items_requested": len(item_ids)
+                }
+                
+        except Exception as e:
+            return {
+                "api_endpoint": "DeleteItems",
+                "connection_status": "FAILED - Deletion operation error",
+                "error": f"Failed to delete items: {str(e)}",
+                "items_requested": len(item_ids) if item_ids else 0,
+                "troubleshooting": [
+                    "1. Ensure item IDs are valid and exist in schematic",
+                    "2. Check that items are not read-only or protected",
+                    "3. Verify KiCad API has deletion permissions",
+                    "4. Try selecting and deleting items manually first"
+                ],
+                "test_result": "❌ Delete operation not working"
+            }
+    
+    def _get_deletion_status_name(self, status):
+        """Convert deletion status enum to readable name."""
+        status_names = {
+            0: "UNKNOWN",
+            1: "OK - Item deleted successfully",
+            2: "NONEXISTENT - Item did not exist",
+            3: "IMMUTABLE - Item cannot be deleted via API"
+        }
+        return status_names.get(status, f"UNKNOWN_STATUS({status})")
 
 
 class SchematicAnalyzeTools:

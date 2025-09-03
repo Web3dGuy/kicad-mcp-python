@@ -172,37 +172,40 @@ class SchematicManipulator(ToolManager, SchematicTool):
             get_schematic_status (to verify the creation)
         """
         try:
-            # This would use the CreateSchematicItems API endpoint
-            # For the proof of concept, we validate the arguments and show what would be created
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            from kipy.proto.common.types import base_types_pb2
             
-            result = {
-                "workflow": "Create Schematic Item - Step 3 of 3",
-                "operation": "CreateSchematicItems API call",
-                "item_type": item_type,
-                "provided_args": args,
-                "status": "proof_of_concept",
-                "message": f"Would create {item_type} with provided parameters",
-                "api_integration": "Ready - Protocol buffers generated and available",
-                "next_steps": [
-                    "Connect to running KiCad instance with schematic open",
-                    "Enable IPC API server in KiCad",
-                    "Call actual CreateSchematicItems endpoint",
-                    "Verify creation with get_schematic_status"
-                ]
-            }
+            # Validate parameters first
+            validation_result = self._validate_create_args(item_type, args)
+            if validation_result:
+                return validation_result
             
-            # Validate that required parameters are provided
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # Create the appropriate schematic item based on type
             if item_type == "Junction":
-                if "position" not in args or "diameter" not in args:
-                    result["validation_error"] = "Missing required parameters: position and diameter"
-            elif item_type in ["Wire", "Bus"]: 
-                if "start" not in args or "end" not in args:
-                    result["validation_error"] = "Missing required parameters: start and end"
+                return self._create_junction(doc_spec, args)
             elif item_type in ["LocalLabel", "GlobalLabel"]:
-                if "position" not in args or "text" not in args:
-                    result["validation_error"] = "Missing required parameters: position and text"
-            
-            return result
+                return self._create_label(doc_spec, item_type, args)
+            elif item_type == "Text":
+                return self._create_text(doc_spec, args)
+            else:
+                return {
+                    "error": f"Item type {item_type} not yet implemented",
+                    "supported_types": ["Junction", "LocalLabel", "GlobalLabel", "Text"],
+                    "status": "partial_implementation"
+                }
             
         except Exception as e:
             return {
@@ -388,6 +391,253 @@ class SchematicManipulator(ToolManager, SchematicTool):
                 "error": f"Failed to draw wire: {str(e)}",
                 "args": args,
                 "suggestion": "Check KiCad connection and try again"
+            }
+    
+    def _validate_create_args(self, item_type: str, args: dict):
+        """Validate that required parameters are provided for item creation."""
+        if item_type == "Junction":
+            if "position" not in args:
+                return {
+                    "error": "Missing required parameter: position",
+                    "required": "position dict with x_nm and y_nm"
+                }
+        elif item_type in ["LocalLabel", "GlobalLabel"]:
+            if "position" not in args or "text" not in args:
+                return {
+                    "error": "Missing required parameters: position and text",
+                    "required": ["position", "text"]
+                }
+        elif item_type == "Text":
+            if "position" not in args or "text" not in args:
+                return {
+                    "error": "Missing required parameters: position and text",
+                    "required": ["position", "text"]
+                }
+        return None
+    
+    def _create_junction(self, doc_spec, args):
+        """Create a junction using CreateSchematicItems API."""
+        try:
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            from kipy.proto.common.types import base_types_pb2
+            from google.protobuf.any_pb2 import Any
+            
+            # Create Junction message
+            junction = schematic_types_pb2.Junction()
+            junction.position.x_nm = args["position"]["x_nm"]
+            junction.position.y_nm = args["position"]["y_nm"]
+            
+            # Set diameter if provided, otherwise use KiCad default (0 = automatic sizing)
+            if "diameter" in args:
+                junction.diameter = args["diameter"]
+            else:
+                junction.diameter = 0  # Default 0 = automatic sizing (matches KiCad auto-generated)
+            
+            # Set color if provided, otherwise use KiCad default (transparent)
+            if "color" in args:
+                color = args["color"]
+                junction.color.r = color.get("r", 0)
+                junction.color.g = color.get("g", 0) 
+                junction.color.b = color.get("b", 0)
+                junction.color.a = color.get("a", 0)
+            else:
+                # Default transparent color (matches KiCad auto-generated junctions)
+                junction.color.r = 0
+                junction.color.g = 0
+                junction.color.b = 0
+                junction.color.a = 0
+            
+            # Pack into Any message
+            any_item = Any()
+            any_item.Pack(junction)
+            
+            # Create the request
+            request = schematic_commands_pb2.CreateSchematicItems()
+            request.schematic.CopyFrom(doc_spec)
+            request.items.append(any_item)
+            
+            # Send the request to KiCad
+            response = self.send_schematic_command("CreateSchematicItems", request)
+            
+            if response and hasattr(response, 'created_ids') and len(response.created_ids) > 0:
+                item_id = response.created_ids[0].value if response.created_ids[0].value else "unknown"
+                return {
+                    "workflow": "Create Schematic Item - Step 3 of 3",
+                    "status": "success",
+                    "operation": "Junction created",
+                    "item_type": "Junction",
+                    "item_id": item_id,
+                    "position": f"({args['position']['x_nm']/1000000:.1f}mm, {args['position']['y_nm']/1000000:.1f}mm)",
+                    "diameter": f"{junction.diameter/1000000:.2f}mm",
+                    "next_actions": [
+                        "get_schematic_status() to verify junction creation",
+                        "create_schematic_item_step_1() to create another item"
+                    ]
+                }
+            else:
+                error_msg = response.error if response and hasattr(response, 'error') else "No items created"
+                return {
+                    "workflow": "Create Schematic Item - Step 3 of 3", 
+                    "status": "failed",
+                    "error": error_msg,
+                    "item_type": "Junction"
+                }
+                
+        except Exception as e:
+            return {
+                "error": f"Failed to create junction: {str(e)}",
+                "item_type": "Junction",
+                "args": args
+            }
+    
+    def _create_label(self, doc_spec, item_type: str, args):
+        """Create a label (Local or Global) using CreateSchematicItems API.""" 
+        try:
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            from kipy.proto.common.types import base_types_pb2
+            from google.protobuf.any_pb2 import Any
+            
+            # Create appropriate label type
+            if item_type == "LocalLabel":
+                label = schematic_types_pb2.LocalLabel()
+            else:  # GlobalLabel
+                label = schematic_types_pb2.GlobalLabel()
+            
+            label.position.x_nm = args["position"]["x_nm"]
+            label.position.y_nm = args["position"]["y_nm"]
+            
+            # Handle text - can be string or dict
+            text_content = ""
+            if isinstance(args["text"], str):
+                text_content = args["text"]
+            elif isinstance(args["text"], dict) and "text" in args["text"]:
+                text_content = args["text"]["text"]
+            else:
+                return {
+                    "error": "Invalid text format - expected string or dict with 'text' key",
+                    "provided": args["text"]
+                }
+            
+            # Create the nested text structure: LocalLabel.text -> schematic.Text.text -> common.types.Text
+            # First set the common.types.Text fields
+            label.text.text.position.x_nm = args["position"]["x_nm"]
+            label.text.text.position.y_nm = args["position"]["y_nm"]
+            label.text.text.text = text_content
+            
+            # Pack into Any message
+            any_item = Any()
+            any_item.Pack(label)
+            
+            # Create the request
+            request = schematic_commands_pb2.CreateSchematicItems()
+            request.schematic.CopyFrom(doc_spec)
+            request.items.append(any_item)
+            
+            # Send the request to KiCad
+            response = self.send_schematic_command("CreateSchematicItems", request)
+            
+            if response and hasattr(response, 'created_ids') and len(response.created_ids) > 0:
+                item_id = response.created_ids[0].value if response.created_ids[0].value else "unknown"
+                return {
+                    "workflow": "Create Schematic Item - Step 3 of 3",
+                    "status": "success",
+                    "operation": f"{item_type} created",
+                    "item_type": item_type,
+                    "item_id": item_id,
+                    "position": f"({args['position']['x_nm']/1000000:.1f}mm, {args['position']['y_nm']/1000000:.1f}mm)",
+                    "text": label.text.text,
+                    "next_actions": [
+                        "get_schematic_status() to verify label creation",
+                        "create_schematic_item_step_1() to create another item"
+                    ]
+                }
+            else:
+                error_msg = response.error if response and hasattr(response, 'error') else "No items created"
+                return {
+                    "workflow": "Create Schematic Item - Step 3 of 3",
+                    "status": "failed", 
+                    "error": error_msg,
+                    "item_type": item_type
+                }
+                
+        except Exception as e:
+            return {
+                "error": f"Failed to create {item_type}: {str(e)}",
+                "item_type": item_type,
+                "args": args
+            }
+    
+    def _create_text(self, doc_spec, args):
+        """Create text annotation using CreateSchematicItems API."""
+        try:
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            from kipy.proto.common.types import base_types_pb2
+            from google.protobuf.any_pb2 import Any
+            
+            # Create Text message
+            text_item = schematic_types_pb2.Text()
+            text_item.position.x_nm = args["position"]["x_nm"]
+            text_item.position.y_nm = args["position"]["y_nm"]
+            
+            # Handle text - can be string or dict
+            text_content = ""
+            if isinstance(args["text"], str):
+                text_content = args["text"]
+            elif isinstance(args["text"], dict) and "text" in args["text"]:
+                text_content = args["text"]["text"]
+            else:
+                return {
+                    "error": "Invalid text format - expected string or dict with 'text' key",
+                    "provided": args["text"]
+                }
+            
+            # Create the nested text structure: Text.text -> common.types.Text.text  
+            text_item.text.text = text_content
+            
+            # Pack into Any message
+            any_item = Any()
+            any_item.Pack(text_item)
+            
+            # Create the request
+            request = schematic_commands_pb2.CreateSchematicItems()
+            request.schematic.CopyFrom(doc_spec)
+            request.items.append(any_item)
+            
+            # Send the request to KiCad
+            response = self.send_schematic_command("CreateSchematicItems", request)
+            
+            if response and hasattr(response, 'created_ids') and len(response.created_ids) > 0:
+                item_id = response.created_ids[0].value if response.created_ids[0].value else "unknown"
+                return {
+                    "workflow": "Create Schematic Item - Step 3 of 3",
+                    "status": "success",
+                    "operation": "Text annotation created",
+                    "item_type": "Text",
+                    "item_id": item_id,
+                    "position": f"({args['position']['x_nm']/1000000:.1f}mm, {args['position']['y_nm']/1000000:.1f}mm)",
+                    "text": text_item.text.text,
+                    "next_actions": [
+                        "get_schematic_status() to verify text creation",
+                        "create_schematic_item_step_1() to create another item"
+                    ]
+                }
+            else:
+                error_msg = response.error if response and hasattr(response, 'error') else "No items created"
+                return {
+                    "workflow": "Create Schematic Item - Step 3 of 3",
+                    "status": "failed",
+                    "error": error_msg,
+                    "item_type": "Text"
+                }
+                
+        except Exception as e:
+            return {
+                "error": f"Failed to create text: {str(e)}",
+                "item_type": "Text",
+                "args": args
             }
 
 
