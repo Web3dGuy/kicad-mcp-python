@@ -109,19 +109,6 @@ Based on EESCHEMA_MCP_FEATURE_CATALOG.md Tier 1 items:
 
 ## Technical Notes for Next Session
 
-### Build Commands
-```bash
-# Rebuild KiCad with local source
-cd kicad-mac-builder
-python3 build.py --arch=arm64 --kicad-source-dir ../kicad --target kicad
-
-# Regenerate Python bindings
-cd ../kicad-mcp-python
-poetry run python kicad-python/build.py
-
-# Test MCP server
-poetry run python main.py
-```
 
 ### Test Project
 - Location: `/Volumes/Vault/Workspace/kicad-development/mcp-test-project/`
@@ -135,11 +122,10 @@ poetry run python main.py
 - Feature Catalog: `EESCHEMA_MCP_FEATURE_CATALOG.md` (312+ operations mapped)
 
 ## Critical Reminders
-1. Always use `--kicad-source-dir ../kicad` for development builds to avoid commit/push requirement
-2. Junction implementation needs complete rebuild - don't try to patch existing code
-3. Smart routing is fully functional - previous "errors" were user error in tool usage
-4. Save function is now fixed with proper Empty response type
-5. Delete operations trigger automatic cleanup (junctions removed with wires)
+1. Junction implementation needs complete rebuild - don't try to patch existing code
+2. Smart routing is fully functional - previous "errors" were user error in tool usage
+3. Save function is now fixed with proper Empty response type
+4. Delete operations trigger automatic cleanup (junctions removed with wires)
 
 ## Session End State
 - All schematic tools except junctions are functional
