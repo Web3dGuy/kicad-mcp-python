@@ -46,25 +46,28 @@ class SmartWireTool:
         self.boundary_manager = create_boundary_manager()
         self.symbols_cache = {}  # Cache for symbol data
     
-    def smart_draw_wire_between_pins(self, 
+    def smart_draw_wire_between_pins(self,
                                    start_symbol_id: str, start_pin_number: str,
                                    end_symbol_id: str, end_pin_number: str,
                                    symbols_data,
-                                   routing_mode: str = "manhattan") -> Dict[str, Any]:
+                                   routing_mode: str = "manhattan",
+                                   schematic_items = None) -> Dict[str, Any]:
         """
-        Draw intelligent wire between two specific pins.
-        
+        Draw intelligent wire between two specific pins with full schematic awareness.
+
         This is the main entry point for smart routing, implementing the complete
         workflow from pin identification to optimized wire segment creation.
-        
+        Now includes bus-aware routing using existing schematic wires.
+
         Args:
             start_symbol_id: UUID of starting symbol
             start_pin_number: Pin number on starting symbol (e.g., "1", "2")
-            end_symbol_id: UUID of ending symbol  
+            end_symbol_id: UUID of ending symbol
             end_pin_number: Pin number on ending symbol
             symbols_data: Complete symbol data from get_symbol_positions
             routing_mode: "manhattan", "direct", "45_degree"
-            
+            schematic_items: All schematic objects from get_schematic_items (NEW!)
+
         Returns:
             Dictionary with routing results and wire creation commands
         """
@@ -118,15 +121,59 @@ class SmartWireTool:
             for symbol_data in actual_symbols:
                 symbol = self.routing_engine.convert_mcp_symbol_to_routing_symbol(symbol_data)
                 all_symbols.append(symbol)
-                
+
                 # Add to boundary manager for collision awareness
                 self.boundary_manager.add_component_boundary(symbol, BoundingBoxType.BODY_PINS)
-            
-            # Generate smart routing path
+
+            # PHASE 2 ENHANCEMENT: Extract existing wire structures for bus-aware routing
+            existing_wires = self._extract_wire_structures(schematic_items) if schematic_items else []
+
+            # DEBUG: Log wire extraction results and add to return data
+            debug_info = {
+                "schematic_items_received": bool(schematic_items),
+                "existing_wires_count": len(existing_wires),
+                "wire_extraction_details": []
+            }
+
+            if existing_wires:
+                print(f"DEBUG: Found {len(existing_wires)} existing wires for bus analysis")
+                for wire in existing_wires:
+                    wire_desc = f"Wire {wire['id']}: ({wire['start']['x_mm']},{wire['start']['y_mm']}) -> ({wire['end']['x_mm']},{wire['end']['y_mm']}) - {'VERTICAL' if wire.get('is_vertical') else 'HORIZONTAL' if wire.get('is_horizontal') else 'DIAGONAL'}"
+                    print(f"  {wire_desc}")
+                    debug_info["wire_extraction_details"].append(wire_desc)
+            else:
+                debug_msg = f"No existing wires found - falling back to direct routing"
+                print(f"DEBUG: {debug_msg}")
+                debug_info["wire_extraction_details"].append(debug_msg)
+
+            # Generate enhanced smart routing path with bus awareness
             if routing_mode_enum == RoutingMode.MANHATTAN:
-                routing_path = self.routing_engine.engine.generate_manhattan_path(
-                    start_pin, end_pin, all_symbols
-                )
+                # PHASE 3 ENHANCEMENT: Use bus-aware Manhattan routing
+                if existing_wires:
+                    # Capture stdout to get debug messages
+                    import io
+                    import sys
+                    old_stdout = sys.stdout
+                    sys.stdout = debug_capture = io.StringIO()
+
+                    routing_path = self.routing_engine.engine.generate_bus_aware_manhattan_path(
+                        start_pin, end_pin, all_symbols, existing_wires
+                    )
+
+                    # Restore stdout and get debug output
+                    sys.stdout = old_stdout
+                    debug_output = debug_capture.getvalue()
+                    debug_info["bus_aware_debug_output"] = debug_output.split('\n') if debug_output else []
+
+                    print(f"DEBUG: Used bus-aware routing - path has {len(routing_path.segments)} segments")
+                    debug_info["routing_algorithm_used"] = "bus_aware_manhattan"
+                else:
+                    # Fallback to original algorithm if no existing wires
+                    routing_path = self.routing_engine.engine.generate_manhattan_path(
+                        start_pin, end_pin, all_symbols
+                    )
+                    print(f"DEBUG: Used direct routing - path has {len(routing_path.segments)} segments")
+                    debug_info["routing_algorithm_used"] = "direct_manhattan"
             else:
                 # For other modes, use the component-aware routing
                 routing_path = self.routing_engine.engine.route_wire_with_avoidance(
@@ -156,7 +203,8 @@ class SmartWireTool:
                     "segment_count": len(routing_path.segments),
                     "has_collision": collision_result.has_collision,
                     "colliding_components": collision_result.colliding_components,
-                    "corridor_analysis": corridor_analysis
+                    "corridor_analysis": corridor_analysis,
+                    "bus_aware_debug": debug_info  # Include debug info in response
                 },
                 "wire_segments": wire_segments,
                 "pin_info": {
@@ -302,6 +350,87 @@ class SmartWireTool:
         
         return None, None
     
+    def _extract_wire_structures(self, schematic_items) -> List[Dict[str, Any]]:
+        """
+        Extract existing wire structures from schematic items for bus-aware routing.
+
+        Args:
+            schematic_items: Output from get_schematic_items("all")
+
+        Returns:
+            List of wire structures with position and type information
+        """
+        # DEBUG: Check what data we're receiving
+        print(f"DEBUG _extract_wire_structures:")
+        print(f"  schematic_items type: {type(schematic_items)}")
+        if schematic_items:
+            print(f"  schematic_items keys: {list(schematic_items.keys()) if isinstance(schematic_items, dict) else 'not_dict'}")
+            if schematic_items.get('items'):
+                print(f"  items type: {type(schematic_items.get('items'))}")
+                print(f"  items length: {len(schematic_items.get('items')) if hasattr(schematic_items.get('items'), '__len__') else 'no_len'}")
+        else:
+            print(f"  schematic_items is None/empty")
+
+        if not schematic_items or not schematic_items.get('items'):
+            print(f"DEBUG: No schematic_items or empty items - returning empty wire list")
+            return []
+
+        wire_structures = []
+
+        # Handle different formats of schematic_items
+        items = schematic_items.get('items', [])
+        if isinstance(items, dict):
+            # items is a dict with item_type -> [items] mapping
+            for item_type, item_list in items.items():
+                if item_type == 'Line' and isinstance(item_list, list):
+                    wire_structures.extend(item_list)
+        elif isinstance(items, list):
+            # items is a flat list of all items
+            print(f"DEBUG: Processing flat list of {len(items)} items")
+            for i, item in enumerate(items):
+                print(f"  Item {i}: type='{item.get('type')}', has_id={bool(item.get('id'))}")
+                if item.get('type') == 'Line':
+                    print(f"    -> Found Line wire: {item.get('id')}")
+                    wire_structures.append(item)
+
+        # Filter and enrich wire data
+        enriched_wires = []
+        for wire in wire_structures:
+            # Ensure wire has required position data
+            if 'start' in wire and 'end' in wire and 'id' in wire:
+                enriched_wire = {
+                    'id': wire['id'],
+                    'start': wire['start'],
+                    'end': wire['end'],
+                    'layer': wire.get('layer', 1),
+                    'layer_type': wire.get('layer_type', 'WIRE'),
+                    # Calculate wire properties
+                    'length_nm': self._calculate_wire_length(wire['start'], wire['end']),
+                    'is_horizontal': self._is_horizontal_wire(wire['start'], wire['end']),
+                    'is_vertical': self._is_vertical_wire(wire['start'], wire['end'])
+                }
+                enriched_wires.append(enriched_wire)
+
+        print(f"DEBUG: Wire extraction complete - found {len(enriched_wires)} enriched wires")
+        for wire in enriched_wires:
+            print(f"  Wire {wire['id']}: ({wire['start']['x_mm']},{wire['start']['y_mm']}) -> ({wire['end']['x_mm']},{wire['end']['y_mm']}) - {'VERTICAL' if wire.get('is_vertical') else 'HORIZONTAL' if wire.get('is_horizontal') else 'DIAGONAL'}")
+
+        return enriched_wires
+
+    def _calculate_wire_length(self, start, end):
+        """Calculate length of wire segment in nanometers"""
+        dx = end['x_nm'] - start['x_nm']
+        dy = end['y_nm'] - start['y_nm']
+        return (dx**2 + dy**2)**0.5
+
+    def _is_horizontal_wire(self, start, end, tolerance=100000):  # 0.1mm tolerance
+        """Check if wire is horizontal (within tolerance)"""
+        return abs(end['y_nm'] - start['y_nm']) < tolerance
+
+    def _is_vertical_wire(self, start, end, tolerance=100000):  # 0.1mm tolerance
+        """Check if wire is vertical (within tolerance)"""
+        return abs(end['x_nm'] - start['x_nm']) < tolerance
+
     def _generate_routing_recommendations(self, path, collision_result, corridor_analysis) -> List[str]:
         """Generate professional routing recommendations"""
         recommendations = []

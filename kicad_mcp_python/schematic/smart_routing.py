@@ -73,6 +73,7 @@ class Pin:
     orientation: int  # 0=East, 1=North, 2=West, 3=South
     electrical_type: int
     length: int
+    symbol_reference: str = ""  # For debugging - symbol reference this pin belongs to
     
     def get_approach_angle(self) -> int:
         """Get optimal approach angle based on pin orientation"""
@@ -223,7 +224,314 @@ class SmartRoutingEngine:
                 
         return midpoint
     
-    def generate_manhattan_path(self, start_pin: Pin, end_pin: Pin, 
+    def generate_bus_aware_manhattan_path(self, start_pin: Pin, end_pin: Pin,
+                                        avoid_components: List[Symbol] = None,
+                                        existing_wires: List[dict] = None) -> RoutingPath:
+        """
+        Generate bus-aware Manhattan routing path that considers existing wire structures.
+
+        This enhanced routing algorithm analyzes existing schematic wires to identify
+        potential bus structures and routes through them when beneficial.
+
+        Args:
+            start_pin: Starting pin for routing
+            end_pin: Ending pin for routing
+            avoid_components: Components to route around
+            existing_wires: Existing wire structures from schematic
+
+        Returns:
+            Optimized routing path considering bus structures
+        """
+        avoid_components = avoid_components or []
+        existing_wires = existing_wires or []
+
+        # DEBUG: Bus-aware routing entry point
+        print(f"DEBUG BUS-AWARE ROUTING:")
+        print(f"  Start pin: {start_pin.symbol_reference}.{start_pin.number} at ({start_pin.position.x_nm/1000000:.2f}, {start_pin.position.y_nm/1000000:.2f})")
+        print(f"  End pin: {end_pin.symbol_reference}.{end_pin.number} at ({end_pin.position.x_nm/1000000:.2f}, {end_pin.position.y_nm/1000000:.2f})")
+        print(f"  Existing wires: {len(existing_wires)}")
+
+        # Get connection points
+        start_pos = start_pin.get_connection_point()
+        end_pos = end_pin.get_connection_point()
+
+        # Analyze existing wires for bus structures
+        bus_structures = self._analyze_bus_structures(existing_wires)
+        print(f"DEBUG: Found {len(bus_structures)} bus structures")
+        for bus in bus_structures:
+            print(f"  Bus {bus['id']}: {bus['type']} at {bus['coordinate']/1000000:.2f}mm, range {bus['range_start']/1000000:.2f}-{bus['range_end']/1000000:.2f}mm")
+
+        # Generate routing options:
+        # 1. Direct pin-to-pin (original algorithm)
+        # 2. Bus-aware routing (new enhancement)
+        direct_path = self._generate_direct_manhattan_path(start_pin, end_pin, avoid_components)
+
+        if bus_structures:
+            bus_aware_path = self._generate_bus_routing_path(start_pos, end_pos, bus_structures)
+
+            if bus_aware_path:
+                print(f"DEBUG: Generated bus-aware path with length {bus_aware_path.total_length/1000000:.2f}mm")
+            else:
+                print(f"DEBUG: No beneficial bus-aware path found")
+
+            # Compare paths and select the best one
+            if bus_aware_path and self._is_better_path(bus_aware_path, direct_path):
+                # Set pin references for bus-aware path
+                bus_aware_path.start_pin = start_pin
+                bus_aware_path.end_pin = end_pin
+                print(f"DEBUG: Selected BUS-AWARE path")
+                return bus_aware_path
+            else:
+                print(f"DEBUG: Selected DIRECT path (bus path not better)")
+
+        return direct_path
+
+    def _generate_direct_manhattan_path(self, start_pin: Pin, end_pin: Pin,
+                                       avoid_components: List[Symbol] = None) -> RoutingPath:
+        """Original Manhattan path generation (moved from generate_manhattan_path)"""
+        avoid_components = avoid_components or []
+
+        # Get connection points (may be offset from pin centers for proper approach)
+        start_pos = start_pin.get_connection_point()
+        end_pos = end_pin.get_connection_point()
+
+        # Determine routing preferences based on pin orientations
+        prefer_horizontal, prefer_vertical = self._get_routing_preferences(start_pin, end_pin)
+
+        # Compute optimal break point using KiCad's actual algorithm
+        break_point = self.compute_break_point(
+            start_pos, end_pos,
+            RoutingMode.MANHATTAN,
+            prefer_horizontal,
+            prefer_vertical
+        )
+
+        # Create two-segment Manhattan path
+        segments = [
+            (start_pos, break_point),
+            (break_point, end_pos)
+        ]
+
+        # Calculate total path length
+        total_length = start_pos.distance_to(break_point) + break_point.distance_to(end_pos)
+
+        path = RoutingPath(
+            start_pin=start_pin,
+            end_pin=end_pin,
+            segments=segments,
+            total_length=total_length,
+            mode=RoutingMode.MANHATTAN
+        )
+
+        # Score the path quality (lower length = higher score)
+        path.quality_score = 1000000.0 / (total_length + 1.0)
+
+        return path
+
+    def _analyze_bus_structures(self, existing_wires: List[dict]) -> List[dict]:
+        """
+        Analyze existing wires to identify potential bus structures.
+
+        Returns list of bus structures with connection information.
+        """
+        buses = []
+        min_bus_length = 5000000  # 5mm minimum for bus consideration
+
+        for wire in existing_wires:
+            # Only consider electrical wires (not graphical lines)
+            if wire.get('layer_type') != 'WIRE':
+                continue
+
+            length = wire.get('length_nm', 0)
+            if length < min_bus_length:
+                continue
+
+            # Check if wire is axis-aligned (horizontal or vertical)
+            if wire.get('is_horizontal'):
+                buses.append({
+                    'type': 'horizontal',
+                    'id': wire['id'],
+                    'coordinate': wire['start']['y_nm'],  # Y-coordinate of horizontal bus
+                    'range_start': min(wire['start']['x_nm'], wire['end']['x_nm']),
+                    'range_end': max(wire['start']['x_nm'], wire['end']['x_nm']),
+                    'length_nm': length,
+                    'start_pos': wire['start'],
+                    'end_pos': wire['end']
+                })
+            elif wire.get('is_vertical'):
+                buses.append({
+                    'type': 'vertical',
+                    'id': wire['id'],
+                    'coordinate': wire['start']['x_nm'],  # X-coordinate of vertical bus
+                    'range_start': min(wire['start']['y_nm'], wire['end']['y_nm']),
+                    'range_end': max(wire['start']['y_nm'], wire['end']['y_nm']),
+                    'length_nm': length,
+                    'start_pos': wire['start'],
+                    'end_pos': wire['end']
+                })
+
+        # Sort buses by length (longer buses are more attractive for routing)
+        buses.sort(key=lambda x: x['length_nm'], reverse=True)
+        return buses
+
+    def _generate_bus_routing_path(self, start_pos: Position, end_pos: Position,
+                                 bus_structures: List[dict]) -> RoutingPath:
+        """
+        Generate routing path that uses existing bus structures when beneficial.
+
+        This implements multi-hop routing: pin → bus → destination
+        """
+        best_path = None
+        best_length = float('inf')
+
+        for bus in bus_structures:
+            # Check if this bus can provide a beneficial routing path
+            connection_point = self._find_optimal_bus_connection_point(start_pos, end_pos, bus)
+
+            if connection_point:
+                # Calculate multi-hop path: start → bus → end
+                leg1_length = start_pos.distance_to(connection_point)
+                leg2_length = connection_point.distance_to(end_pos)
+                total_length = leg1_length + leg2_length
+
+                if total_length < best_length:
+                    # Create Manhattan path segments (90-degree angles only)
+                    # For bus routing, we need to create proper L-shaped paths
+                    segments = []
+
+                    # First leg: route from start to bus connection point
+                    # This should be a Manhattan path, not diagonal
+                    if start_pos.x_nm != connection_point.x_nm and start_pos.y_nm != connection_point.y_nm:
+                        # Need L-shaped path to reach bus
+                        # Prefer horizontal-first routing for cleaner schematics
+                        intermediate = Position(connection_point.x_nm, start_pos.y_nm)
+                        segments.append((start_pos, intermediate))  # Horizontal segment
+                        segments.append((intermediate, connection_point))  # Vertical segment to bus
+                    else:
+                        # Already aligned - single segment
+                        segments.append((start_pos, connection_point))
+
+                    # Second leg: from bus connection to destination
+                    # The bus itself provides the connection, we just need the final segment
+                    if connection_point.x_nm != end_pos.x_nm or connection_point.y_nm != end_pos.y_nm:
+                        # Only add segment if not already at destination
+                        segments.append((connection_point, end_pos))
+
+                    best_path = RoutingPath(
+                        start_pin=None,  # Will be set by caller
+                        end_pin=None,    # Will be set by caller
+                        segments=segments,
+                        total_length=total_length,
+                        mode=RoutingMode.MANHATTAN
+                    )
+                    best_path.quality_score = 1000000.0 / (total_length + 1.0)
+                    best_path.bus_used = bus['id']  # Track which bus was used
+                    best_length = total_length
+
+        return best_path
+
+    def _find_optimal_bus_connection_point(self, start_pos: Position, end_pos: Position,
+                                         bus: dict) -> Position:
+        """
+        Find optimal point on bus structure to connect routing path.
+
+        Returns the point on the bus that minimizes total routing length.
+        """
+        if bus['type'] == 'horizontal':
+            # Bus is horizontal - connection point has same Y, varying X
+            bus_y = bus['coordinate']
+
+            # Check if either pin is already aligned with bus Y-coordinate
+            start_aligned = abs(start_pos.y_nm - bus_y) < 100000  # 0.1mm tolerance
+            end_aligned = abs(end_pos.y_nm - bus_y) < 100000
+
+            if start_aligned:
+                # Start pin is aligned with bus - connect at start X
+                connection_x = max(bus['range_start'], min(bus['range_end'], start_pos.x_nm))
+                return Position(connection_x, bus_y)
+            elif end_aligned:
+                # End pin is aligned with bus - connect at end X
+                connection_x = max(bus['range_start'], min(bus['range_end'], end_pos.x_nm))
+                return Position(connection_x, bus_y)
+            else:
+                # Neither pin aligned - find optimal connection point
+                optimal_x = (start_pos.x_nm + end_pos.x_nm) // 2
+                connection_x = max(bus['range_start'], min(bus['range_end'], optimal_x))
+                return Position(connection_x, bus_y)
+
+        elif bus['type'] == 'vertical':
+            # Bus is vertical - connection point has same X, varying Y
+            bus_x = bus['coordinate']
+
+            # For vertical buses, prioritize connecting at the coordinate that minimizes total routing length
+            # This creates direct horizontal connections when possible (like battery → bus scenarios)
+
+            # Calculate potential connection points and their total routing costs
+            start_y_option = start_pos.y_nm  # Connect at start pin's Y level
+            end_y_option = end_pos.y_nm      # Connect at end pin's Y level
+
+            # Ensure connection points are within the bus range
+            start_y_clamped = max(bus['range_start'], min(bus['range_end'], start_y_option))
+            end_y_clamped = max(bus['range_start'], min(bus['range_end'], end_y_option))
+
+            # Calculate total routing path lengths for both connection options
+            # Full path is: start_pos → connection_point → end_pos
+
+            # Option 1: Connect at start Y level (creates direct horizontal connection)
+            start_connection = Position(bus_x, start_y_clamped)
+            start_total_length = start_pos.distance_to(start_connection) + start_connection.distance_to(end_pos)
+
+            # Option 2: Connect at end Y level
+            end_connection = Position(bus_x, end_y_clamped)
+            end_total_length = start_pos.distance_to(end_connection) + end_connection.distance_to(end_pos)
+
+            # Choose the connection point that creates the shortest total routing path
+            # This ensures we get the most efficient overall route
+            print(f"DEBUG BUS CONNECTION CALCULATION:")
+            print(f"  Bus at x={bus_x/1000000:.2f}mm, range y={bus['range_start']/1000000:.2f}-{bus['range_end']/1000000:.2f}mm")
+            print(f"  Start Y={start_y_option/1000000:.2f}mm, clamped to {start_y_clamped/1000000:.2f}mm")
+            print(f"  End Y={end_y_option/1000000:.2f}mm, clamped to {end_y_clamped/1000000:.2f}mm")
+            print(f"  Option 1 (start Y): total length={start_total_length/1000000:.2f}mm")
+            print(f"  Option 2 (end Y): total length={end_total_length/1000000:.2f}mm")
+
+            if start_total_length <= end_total_length:
+                print(f"  → Choosing start Y connection at ({bus_x/1000000:.2f}, {start_y_clamped/1000000:.2f})")
+                return start_connection
+            else:
+                print(f"  → Choosing end Y connection at ({bus_x/1000000:.2f}, {end_y_clamped/1000000:.2f})")
+                return end_connection
+
+        return None
+
+    def _is_better_path(self, bus_path: RoutingPath, direct_path: RoutingPath) -> bool:
+        """
+        Determine if bus-aware path is better than direct path.
+
+        Considers length, professional appearance, and design standards.
+        """
+        # Bus path should be meaningfully shorter to be worth the complexity
+        length_improvement = (direct_path.total_length - bus_path.total_length) / direct_path.total_length
+
+        # DEBUG: Path comparison analysis
+        print(f"DEBUG PATH COMPARISON:")
+        print(f"  Direct path length: {direct_path.total_length/1000000:.2f}mm")
+        print(f"  Bus path length: {bus_path.total_length/1000000:.2f}mm")
+        print(f"  Length improvement: {length_improvement*100:.1f}%")
+
+        # Require at least 10% improvement to justify bus routing
+        if length_improvement > 0.1:
+            print(f"  → CHOOSING BUS PATH (>10% improvement)")
+            return True
+
+        # Even small improvements are valuable for professional appearance
+        if length_improvement > 0.05 and bus_path.total_length < direct_path.total_length:
+            print(f"  → CHOOSING BUS PATH (>5% improvement)")
+            return True
+
+        print(f"  → CHOOSING DIRECT PATH (insufficient improvement)")
+        return False
+
+    def generate_manhattan_path(self, start_pin: Pin, end_pin: Pin,
                               avoid_components: List[Symbol] = None) -> RoutingPath:
         """
         Generate intelligent Manhattan routing path between two pins.
@@ -391,7 +699,8 @@ class SmartRoutingMCPIntegration:
                 ),
                 orientation=pin_data['orientation'],
                 electrical_type=pin_data['electrical_type'],
-                length=pin_data['length']
+                length=pin_data['length'],
+                symbol_reference=mcp_symbol['reference']  # For debugging
             )
             pins.append(pin)
         

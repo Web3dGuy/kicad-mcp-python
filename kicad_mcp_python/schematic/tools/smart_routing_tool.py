@@ -39,6 +39,9 @@ class SchematicSmartRouter(ToolManager, SchematicTool):
         # Register analysis tools
         self.add_tool(self.analyze_routing_path)
         self.add_tool(self.preview_smart_route)
+
+        # Register bus-aware routing enhancement
+        self.add_tool(self.get_existing_bus_structures)
     
     def smart_route_step_1(self):
         """
@@ -149,6 +152,28 @@ class SchematicSmartRouter(ToolManager, SchematicTool):
                 # Use cached symbols data if not provided
                 symbols_data = self.cached_symbols_data
 
+            # Cache schematic items for bus-aware routing (State Caching Pattern)
+            schematic_items = args.get('schematic_items')
+            if not schematic_items and not hasattr(self, 'cached_schematic_items'):
+                # Fetch and cache schematic items for bus-aware routing
+                try:
+                    from .analyze_tool import SchematicAnalyzer
+                    analyzer = SchematicAnalyzer(self.mcp)
+                    schematic_items = analyzer.get_schematic_items("all")
+                    self.cached_schematic_items = schematic_items
+                    print(f"DEBUG: Cached {len(schematic_items.get('items', []))} schematic items")
+                except Exception as e:
+                    print(f"DEBUG: Failed to fetch schematic items: {str(e)}")
+                    schematic_items = None
+                    self.cached_schematic_items = None
+            elif not schematic_items:
+                # Use cached schematic items if available
+                schematic_items = getattr(self, 'cached_schematic_items', None)
+                if schematic_items:
+                    print(f"DEBUG: Using cached schematic items: {len(schematic_items.get('items', []))} items")
+                else:
+                    print(f"DEBUG: No cached schematic items available")
+
             # Extract parameters with cached validation
             start_symbol_id = args.get('start_symbol_id')
             start_pin_number = args.get('start_pin_number')
@@ -177,14 +202,17 @@ class SchematicSmartRouter(ToolManager, SchematicTool):
                                     "end_symbol_id", "end_pin_number", "symbols_data"]
                     }
             
-            # Execute smart routing
+            # schematic_items already handled above with proper caching pattern
+
+            # Execute enhanced smart routing with full schematic context
             result = self.smart_wire_tool.smart_draw_wire_between_pins(
                 start_symbol_id=start_symbol_id,
                 start_pin_number=str(start_pin_number),
                 end_symbol_id=end_symbol_id,
                 end_pin_number=str(end_pin_number),
                 symbols_data=symbols_data,
-                routing_mode=routing_mode
+                routing_mode=routing_mode,
+                schematic_items=schematic_items  # NEW: Pass all schematic objects
             )
             
             if result.get('success'):
@@ -368,6 +396,89 @@ class SchematicSmartRouter(ToolManager, SchematicTool):
             return {
                 "preview": "Smart Routing Preview",
                 "error": f"Preview failed: {str(e)}"
+            }
+
+    def get_existing_bus_structures(self) -> Dict[str, Any]:
+        """
+        Analyze existing schematic for bus structures that could be used for routing.
+
+        This method identifies horizontal and vertical wire segments that could serve
+        as intermediate connection points for more efficient routing patterns.
+
+        Returns:
+            Dictionary containing bus structure analysis
+        """
+        try:
+            # Get all existing schematic items to analyze wire structures
+            schematic_items = self.get_schematic_items("all")
+
+            if not schematic_items or not schematic_items.get('items'):
+                return {
+                    "bus_structures": [],
+                    "status": "no_wires_found",
+                    "message": "No existing wires found in schematic for bus analysis"
+                }
+
+            bus_structures = []
+            wire_segments = []
+
+            # Extract wire/line segments from schematic items
+            for item_type, items in schematic_items['items'].items():
+                if item_type == 'Line' and isinstance(items, list):
+                    for item in items:
+                        if 'start' in item and 'end' in item:
+                            wire_segments.append({
+                                'id': item.get('id'),
+                                'start': item['start'],
+                                'end': item['end'],
+                                'layer': item.get('layer', 'unknown'),
+                                'layer_type': item.get('layer_type', 'unknown')
+                            })
+
+            # Analyze wire segments for bus patterns
+            for wire in wire_segments:
+                start_x = wire['start']['x_nm']
+                start_y = wire['start']['y_nm']
+                end_x = wire['end']['x_nm']
+                end_y = wire['end']['y_nm']
+
+                # Calculate wire properties
+                is_horizontal = abs(start_y - end_y) < 100000  # Within 0.1mm tolerance
+                is_vertical = abs(start_x - end_x) < 100000
+                length = ((end_x - start_x)**2 + (end_y - start_y)**2)**0.5
+
+                # Consider as potential bus if it's long enough and axis-aligned
+                min_bus_length = 5000000  # 5mm minimum for bus consideration
+                if length >= min_bus_length and (is_horizontal or is_vertical):
+                    bus_structures.append({
+                        'id': wire['id'],
+                        'type': 'horizontal_bus' if is_horizontal else 'vertical_bus',
+                        'start_pos': {'x_nm': start_x, 'y_nm': start_y},
+                        'end_pos': {'x_nm': end_x, 'y_nm': end_y},
+                        'length_nm': int(length),
+                        'coordinate': start_y if is_horizontal else start_x,
+                        'range_start': min(start_x, end_x) if is_horizontal else min(start_y, end_y),
+                        'range_end': max(start_x, end_x) if is_horizontal else max(start_y, end_y),
+                        'layer': wire['layer'],
+                        'layer_type': wire['layer_type']
+                    })
+
+            # Sort buses by length (longer buses are better for routing)
+            bus_structures.sort(key=lambda x: x['length_nm'], reverse=True)
+
+            return {
+                "bus_structures": bus_structures,
+                "total_wires_analyzed": len(wire_segments),
+                "bus_candidates_found": len(bus_structures),
+                "status": "analysis_complete",
+                "message": f"Found {len(bus_structures)} potential bus structures from {len(wire_segments)} wire segments"
+            }
+
+        except Exception as e:
+            return {
+                "bus_structures": [],
+                "error": f"Bus structure analysis failed: {str(e)}",
+                "status": "error"
             }
 
 
