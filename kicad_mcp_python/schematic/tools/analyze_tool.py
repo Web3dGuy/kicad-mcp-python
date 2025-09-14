@@ -228,7 +228,7 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                                 "y_mm": (line.end.y_nm * scale_factor) / 1_000_000
                             },
                             "layer": line.layer if hasattr(line, 'layer') else "unknown",
-                            "layer_type": "WIRE" if hasattr(line, 'layer') and line.layer == 1 else "GRAPHICAL" if hasattr(line, 'layer') and line.layer == 2 else f"UNKNOWN({line.layer if hasattr(line, 'layer') else 'none'})",
+                            "layer_type": "WIRE" if hasattr(line, 'layer') and line.layer == 1 else "BUS" if hasattr(line, 'layer') and line.layer == 2 else "GRAPHICAL" if hasattr(line, 'layer') and line.layer == 3 else f"UNKNOWN({line.layer if hasattr(line, 'layer') else 'none'})",
                             "scale_applied": scale_factor if scale_factor > 1 else None
                         })
 
@@ -699,7 +699,7 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             
             # Send the actual IPC command to KiCad
             response = self.send_schematic_command("GetSelection", request)
-            
+
             # Process the response
             selected_items = []
             for item in response.items:
@@ -749,7 +749,7 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                                 "y_nm": line.end.y_nm
                             },
                             "layer": line.layer if hasattr(line, 'layer') else "unknown",
-                            "layer_type": "WIRE" if hasattr(line, 'layer') and line.layer == 0 else "GRAPHICAL" if hasattr(line, 'layer') and line.layer == 2 else f"UNKNOWN({line.layer if hasattr(line, 'layer') else 'none'})"
+                            "layer_type": "WIRE" if hasattr(line, 'layer') and line.layer == 1 else "BUS" if hasattr(line, 'layer') and line.layer == 2 else "GRAPHICAL" if hasattr(line, 'layer') and line.layer == 3 else f"UNKNOWN({line.layer if hasattr(line, 'layer') else 'none'})"
                         })
 
                 selected_items.append(item_info)
@@ -961,12 +961,15 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             
             items_response = self.send_schematic_command("GetSchematicItems", get_items_request)
             
-            # Simple alias mapping - Wire is the preferred term for all line segments
-            # KiCad API uses "Line" internally, but we prefer "Wire" for schematic context
+            # Track original user request for layer-based filtering
+            # Wire = electrical lines (layer 1), Line = graphical lines (layer 3)
+            user_requested_types = item_types.copy()
             requested_types = []
             for req_type in item_types:
                 if req_type == 'Wire':
                     requested_types.append('Line')  # Map Wire -> Line (API uses "Line" internally)
+                elif req_type == 'Line':
+                    requested_types.append('Line')  # Line stays as Line
                 else:
                     requested_types.append(req_type)
 
@@ -992,7 +995,25 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                     elif item_type == 'Line':
                         line = schematic_types_pb2.Line()
                         if item.Unpack(line):
-                            item_id = line.id.value
+                            # Apply layer-based filtering for Wire vs Line distinction
+                            should_include = False
+                            line_layer = line.layer if hasattr(line, 'layer') else 1
+
+                            # Check if this Line item matches user's request
+                            for original_type in user_requested_types:
+                                if original_type == 'Wire' and line_layer == 1:
+                                    # Wire = electrical lines (layer 1)
+                                    should_include = True
+                                    break
+                                elif original_type == 'Line' and line_layer == 3:
+                                    # Line = graphical lines (layer 3)
+                                    should_include = True
+                                    break
+
+                            if should_include:
+                                item_id = line.id.value
+                            else:
+                                item_id = None  # Skip this item
                     elif item_type == 'Junction':
                         junction = schematic_types_pb2.Junction()
                         if item.Unpack(junction):
@@ -1004,9 +1025,24 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                     
                     if item_id:
                         items_to_select.append(item_id)
-                        # Count as the user-requested type (Wire shows as Wire, not Line)
-                        if item_type == 'Line' and 'Wire' in item_types:
-                            type_counts['Wire'] = type_counts.get('Wire', 0) + 1
+                        # For counting, use the original user request type, not the internal API type
+                        if item_type == 'Line':
+                            # Determine if this was requested as Wire or Line based on layer
+                            line_layer = 1
+                            if item_type == 'Line':
+                                # Get layer info for proper counting
+                                temp_line = schematic_types_pb2.Line()
+                                if item.Unpack(temp_line):
+                                    line_layer = temp_line.layer if hasattr(temp_line, 'layer') else 1
+
+                            # Count as the type the user requested
+                            for original_type in user_requested_types:
+                                if original_type == 'Wire' and line_layer == 1:
+                                    type_counts['Wire'] = type_counts.get('Wire', 0) + 1
+                                    break
+                                elif original_type == 'Line' and line_layer == 3:
+                                    type_counts['Line'] = type_counts.get('Line', 0) + 1
+                                    break
                         else:
                             type_counts[item_type] = type_counts.get(item_type, 0) + 1
             
