@@ -914,13 +914,17 @@ class SchematicManipulator(ToolManager, SchematicTool):
             Result of junction creation
         """
         try:
-            # Get current document
-            doc_spec = self.get_active_schematic_document()
-            if doc_spec is None:
-                return {
-                    "error": "No active schematic document found",
-                    "message": "Please open a schematic in KiCad first"
-                }
+            # Use cached document for performance, validate cache first
+            if not self._validate_cache() or self.cached_document is None:
+                doc_spec = self.get_active_schematic_document()
+                if doc_spec is None:
+                    return {
+                        "error": "No active schematic document found",
+                        "message": "Please open a schematic in KiCad first"
+                    }
+                self.cached_document = doc_spec
+            else:
+                doc_spec = self.cached_document
 
             # Use internal junction creation method directly
             args = {
@@ -957,13 +961,17 @@ class SchematicManipulator(ToolManager, SchematicTool):
             Result of wire creation
         """
         try:
-            # Get current document
-            doc_spec = self.get_active_schematic_document()
-            if doc_spec is None:
-                return {
-                    "error": "No active schematic document found",
-                    "message": "Please open a schematic in KiCad first"
-                }
+            # Use cached document for performance, validate cache first
+            if not self._validate_cache() or self.cached_document is None:
+                doc_spec = self.get_active_schematic_document()
+                if doc_spec is None:
+                    return {
+                        "error": "No active schematic document found",
+                        "message": "Please open a schematic in KiCad first"
+                    }
+                self.cached_document = doc_spec
+            else:
+                doc_spec = self.cached_document
 
             # Use internal wire drawing method directly
             args = {
@@ -1000,13 +1008,17 @@ class SchematicManipulator(ToolManager, SchematicTool):
             label_type: Label type ("LocalLabel", "GlobalLabel", "HierLabel")
         """
         try:
-            # Get current document
-            doc_spec = self.get_active_schematic_document()
-            if doc_spec is None:
-                return {
-                    "error": "No active schematic document found",
-                    "message": "Please open a schematic in KiCad first"
-                }
+            # Use cached document for performance, validate cache first
+            if not self._validate_cache() or self.cached_document is None:
+                doc_spec = self.get_active_schematic_document()
+                if doc_spec is None:
+                    return {
+                        "error": "No active schematic document found",
+                        "message": "Please open a schematic in KiCad first"
+                    }
+                self.cached_document = doc_spec
+            else:
+                doc_spec = self.cached_document
 
             # Use internal label creation method directly
             args = {
@@ -1068,61 +1080,6 @@ class SchematicManipulator(ToolManager, SchematicTool):
                 "position": f"({x_nm/1000000:.1f}mm, {y_nm/1000000:.1f}mm)"
             }
 
-    def delete_items_direct(self, item_ids: list[str]):
-        """
-        Direct multi-item deletion - bulk operation
-
-        Args:
-            item_ids: List of item ID strings to delete
-        """
-        try:
-            # Get current document
-            doc_spec = self.get_active_schematic_document()
-            if doc_spec is None:
-                return {
-                    "error": "No active schematic document found",
-                    "message": "Please open a schematic in KiCad first"
-                }
-
-            from kipy.proto.schematic import schematic_commands_pb2
-            from kipy.proto.common.types import base_types_pb2
-
-            # Create delete request
-            request = schematic_commands_pb2.DeleteItems()
-            request.schematic.CopyFrom(doc_spec)
-
-            # Add all item IDs to delete
-            for item_id in item_ids:
-                kiid = base_types_pb2.KIID()
-                kiid.value = item_id
-                request.item_ids.append(kiid)
-
-            # Execute delete operation
-            response = self.send_schematic_command("DeleteItems", request)
-
-            if response.status == 0:  # Success
-                return {
-                    "status": "success",
-                    "operation": "Delete Items Direct",
-                    "deleted_count": len(item_ids),
-                    "item_ids": item_ids,
-                    "performance_note": "Direct bulk deletion - single API call"
-                }
-            else:
-                error_msg = response.status_message if hasattr(response, 'status_message') else f"Error {response.status}"
-                return {
-                    "status": "failed",
-                    "error": error_msg,
-                    "function": "delete_items_direct",
-                    "attempted_count": len(item_ids)
-                }
-
-        except Exception as e:
-            return {
-                "error": f"Failed to delete items directly: {str(e)}",
-                "function": "delete_items_direct",
-                "item_count": len(item_ids)
-            }
 
 
 class SchematicManipulationTools:
