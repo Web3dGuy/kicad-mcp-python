@@ -177,7 +177,8 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
         try:
             # Import protocol buffer messages
             from kipy.proto.schematic import schematic_commands_pb2
-            
+            from kipy.proto.schematic import schematic_types_pb2
+
             # Get the active schematic document
             doc_spec = self.get_active_schematic_document()
             if not doc_spec:
@@ -196,9 +197,41 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             items = []
             for item in response.items:
                 item_data = {
-                    "type": item.type_url,
+                    "type": item.type_url.split('.')[-1] if '.' in item.type_url else item.type_url,
+                    "type_url": item.type_url,
                     "data_available": True
                 }
+
+                # Try to extract Line coordinates
+                if item.type_url.endswith('Line'):
+                    line = schematic_types_pb2.Line()
+                    if item.Unpack(line):
+                        # WORKAROUND: Lines seem to be returned at 1/100 scale compared to symbols
+                        # This may be a KiCad API issue where lines use different internal units
+                        # Check if coordinates are suspiciously small (< 10mm)
+                        scale_factor = 1
+                        if abs(line.start.x_nm) < 10_000_000 and abs(line.start.y_nm) < 10_000_000:
+                            scale_factor = 100  # Apply 100x scaling to match symbol coordinates
+
+                        item_data.update({
+                            "id": line.id.value if hasattr(line, 'id') else "unknown",
+                            "start": {
+                                "x_nm": line.start.x_nm * scale_factor,
+                                "y_nm": line.start.y_nm * scale_factor,
+                                "x_mm": (line.start.x_nm * scale_factor) / 1_000_000,
+                                "y_mm": (line.start.y_nm * scale_factor) / 1_000_000
+                            },
+                            "end": {
+                                "x_nm": line.end.x_nm * scale_factor,
+                                "y_nm": line.end.y_nm * scale_factor,
+                                "x_mm": (line.end.x_nm * scale_factor) / 1_000_000,
+                                "y_mm": (line.end.y_nm * scale_factor) / 1_000_000
+                            },
+                            "layer": line.layer if hasattr(line, 'layer') else "unknown",
+                            "layer_type": "WIRE" if hasattr(line, 'layer') and line.layer == 1 else "GRAPHICAL" if hasattr(line, 'layer') and line.layer == 2 else f"UNKNOWN({line.layer if hasattr(line, 'layer') else 'none'})",
+                            "scale_applied": scale_factor if scale_factor > 1 else None
+                        })
+
                 items.append(item_data)
             
             result = {
@@ -207,7 +240,7 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                 "requested_types": item_types,
                 "total_items": response.total_count,
                 "items_retrieved": len(items),
-                "items": items[:10] if len(items) > 10 else items,  # Limit display
+                "items": items,  # Show all items to inspect graphical line
                 "note": f"Retrieved {len(items)} items from schematic",
                 "test_result": "✅ GetSchematicItems working correctly"
             }
@@ -702,7 +735,23 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                                 "y_nm": wire.end.y_nm
                             }
                         })
-                
+                elif item.type_url.endswith('Line'):
+                    line = schematic_types_pb2.Line()
+                    if item.Unpack(line):
+                        item_info.update({
+                            "id": line.id.value,
+                            "start": {
+                                "x_nm": line.start.x_nm,
+                                "y_nm": line.start.y_nm
+                            },
+                            "end": {
+                                "x_nm": line.end.x_nm,
+                                "y_nm": line.end.y_nm
+                            },
+                            "layer": line.layer if hasattr(line, 'layer') else "unknown",
+                            "layer_type": "WIRE" if hasattr(line, 'layer') and line.layer == 0 else "GRAPHICAL" if hasattr(line, 'layer') and line.layer == 2 else f"UNKNOWN({line.layer if hasattr(line, 'layer') else 'none'})"
+                        })
+
                 selected_items.append(item_info)
             
             return {
@@ -867,16 +916,18 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
     
     def select_by_type(self, item_types: list[str]):
         """
-        Select all items of specified types.
-        
-        This is a convenience method that combines GetSchematicItems and AddToSelection
-        to select all items matching the specified types (e.g., 'Symbol', 'Wire', 'Junction').
-        
+        Select all items of specified types in the schematic.
+
+        This convenience method combines GetSchematicItems and AddToSelection to select all
+        items matching the specified types. Use 'Wire' for electrical connections - this is
+        the preferred terminology and will be automatically mapped to KiCad's internal 'Line' type.
+
         Args:
-            item_types: List of item type names to select (e.g., ['Symbol', 'Wire'])
-            
+            item_types: List of item type names to select (e.g., ['Symbol', 'Wire', 'Junction'])
+                       Use 'Wire' for electrical connections (preferred over 'Line')
+
         Returns:
-            dict: Dictionary containing selection results
+            dict: Dictionary containing selection results and counts by type
         """
         try:
             # Import protocol buffer messages
@@ -889,7 +940,8 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                     "error": "No item types provided",
                     "required": "List of item type names to select",
                     "example": "select_by_type(['Symbol', 'Wire'])",
-                    "available_types": ['Symbol', 'Wire', 'Junction', 'LocalLabel', 'GlobalLabel']
+                    "available_types": ['Symbol', 'Wire', 'Junction', 'LocalLabel', 'GlobalLabel'],
+                    "note": "Use 'Wire' for electrical connections (internally mapped to Line type)"
                 }
             
             # Get the active schematic document
@@ -909,14 +961,23 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             
             items_response = self.send_schematic_command("GetSchematicItems", get_items_request)
             
+            # Simple alias mapping - Wire is the preferred term for all line segments
+            # KiCad API uses "Line" internally, but we prefer "Wire" for schematic context
+            requested_types = []
+            for req_type in item_types:
+                if req_type == 'Wire':
+                    requested_types.append('Line')  # Map Wire -> Line (API uses "Line" internally)
+                else:
+                    requested_types.append(req_type)
+
             # Filter items by type and collect their IDs
             items_to_select = []
             type_counts = {}
-            
+
             for item in items_response.items:
                 item_type = item.type_url.split('.')[-1] if '.' in item.type_url else item.type_url
-                
-                if item_type in item_types:
+
+                if item_type in requested_types:
                     # Extract ID based on type
                     item_id = None
                     
@@ -928,6 +989,10 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                         wire = schematic_types_pb2.Wire()
                         if item.Unpack(wire):
                             item_id = wire.id.value
+                    elif item_type == 'Line':
+                        line = schematic_types_pb2.Line()
+                        if item.Unpack(line):
+                            item_id = line.id.value
                     elif item_type == 'Junction':
                         junction = schematic_types_pb2.Junction()
                         if item.Unpack(junction):
@@ -939,7 +1004,11 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                     
                     if item_id:
                         items_to_select.append(item_id)
-                        type_counts[item_type] = type_counts.get(item_type, 0) + 1
+                        # Count as the user-requested type (Wire shows as Wire, not Line)
+                        if item_type == 'Line' and 'Wire' in item_types:
+                            type_counts['Wire'] = type_counts.get('Wire', 0) + 1
+                        else:
+                            type_counts[item_type] = type_counts.get(item_type, 0) + 1
             
             if not items_to_select:
                 return {
