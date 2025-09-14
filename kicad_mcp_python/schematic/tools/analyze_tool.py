@@ -26,6 +26,12 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
         # Document management tools
         self.add_tool(self.save_schematic)
         self.add_tool(self.delete_items)
+        
+        # Selection management tools - Phase 1 Foundational Optimizations
+        self.add_tool(self.get_selection)
+        self.add_tool(self.select_items)
+        self.add_tool(self.clear_selection)
+        self.add_tool(self.select_by_type)
 
     def get_schematic_status(self):
         """
@@ -625,6 +631,370 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
             3: "IMMUTABLE - Item cannot be deleted via API"
         }
         return status_names.get(status, f"UNKNOWN_STATUS({status})")
+    
+    # Selection Management System - Phase 1 Foundational Optimizations
+    
+    def get_selection(self):
+        """
+        Get currently selected schematic items.
+        
+        This uses the new GetSelection API endpoint to retrieve the current selection
+        from the schematic editor, enabling bulk operations on selected items.
+        
+        Returns:
+            dict: Dictionary containing selected items and their properties
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # Create GetSelection request
+            request = schematic_commands_pb2.GetSelection()
+            request.schematic.CopyFrom(doc_spec)
+            
+            # Send the actual IPC command to KiCad
+            response = self.send_schematic_command("GetSelection", request)
+            
+            # Process the response
+            selected_items = []
+            for item in response.items:
+                item_info = {
+                    "type": item.type_url.split('.')[-1] if '.' in item.type_url else item.type_url,
+                    "type_url": item.type_url
+                }
+                
+                # Try to extract more details based on type
+                if item.type_url.endswith('Symbol'):
+                    symbol = schematic_types_pb2.Symbol()
+                    if item.Unpack(symbol):
+                        item_info.update({
+                            "id": symbol.id.value,
+                            "reference": symbol.reference,
+                            "value": symbol.value,
+                            "position": {
+                                "x_nm": symbol.position.x_nm,
+                                "y_nm": symbol.position.y_nm
+                            }
+                        })
+                elif item.type_url.endswith('Wire'):
+                    wire = schematic_types_pb2.Wire()
+                    if item.Unpack(wire):
+                        item_info.update({
+                            "id": wire.id.value,
+                            "start": {
+                                "x_nm": wire.start.x_nm,
+                                "y_nm": wire.start.y_nm
+                            },
+                            "end": {
+                                "x_nm": wire.end.x_nm,
+                                "y_nm": wire.end.y_nm
+                            }
+                        })
+                
+                selected_items.append(item_info)
+            
+            return {
+                "api_endpoint": "GetSelection",
+                "connection_status": "SUCCESS - Selection retrieved",
+                "selection_count": response.selection_count,
+                "selected_items": selected_items,
+                "result": f"✅ {response.selection_count} items in selection",
+                "next_actions": [
+                    "Perform bulk operations on selected items",
+                    "clear_selection() to deselect all",
+                    "select_items() to modify selection"
+                ]
+            }
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "GetSelection",
+                "connection_status": "FAILED - Selection retrieval error",
+                "error": f"Failed to get selection: {str(e)}",
+                "troubleshooting": [
+                    "1. Ensure KiCad is running with a schematic open",
+                    "2. Check that items are selected in the editor",
+                    "3. Verify API has selection management handlers",
+                    "4. Try selecting items manually first"
+                ]
+            }
+    
+    def select_items(self, item_ids: list[str]):
+        """
+        Add items to selection by ID.
+        
+        This uses the AddToSelection API endpoint to add specified items
+        to the current selection in the schematic editor.
+        
+        Args:
+            item_ids: List of item ID strings to add to selection
+            
+        Returns:
+            dict: Dictionary containing updated selection information
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.common.types import base_types_pb2
+            
+            if not item_ids or len(item_ids) == 0:
+                return {
+                    "error": "No item IDs provided",
+                    "required": "List of item ID strings to select",
+                    "example": "select_items(['symbol-id-1', 'wire-id-2'])"
+                }
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # Create AddToSelection request
+            request = schematic_commands_pb2.AddToSelection()
+            request.schematic.CopyFrom(doc_spec)
+            
+            # Add item IDs to select
+            for item_id in item_ids:
+                kiid = base_types_pb2.KIID()
+                kiid.value = item_id
+                request.item_ids.append(kiid)
+            
+            # Send the actual IPC command to KiCad
+            response = self.send_schematic_command("AddToSelection", request)
+            
+            return {
+                "api_endpoint": "AddToSelection",
+                "connection_status": "SUCCESS - Items added to selection",
+                "items_requested": len(item_ids),
+                "selection_count": response.selection_count,
+                "result": f"✅ {len(item_ids)} items added, {response.selection_count} total selected",
+                "next_actions": [
+                    "get_selection() to see all selected items",
+                    "Perform operations on selected items",
+                    "clear_selection() to deselect all"
+                ]
+            }
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "AddToSelection",
+                "connection_status": "FAILED - Selection addition error",
+                "error": f"Failed to add items to selection: {str(e)}",
+                "items_requested": len(item_ids) if item_ids else 0,
+                "troubleshooting": [
+                    "1. Ensure item IDs are valid and exist in schematic",
+                    "2. Check that KiCad API has AddToSelection handler",
+                    "3. Verify Python bindings are up to date",
+                    "4. Try using get_schematic_items() to find valid IDs"
+                ]
+            }
+    
+    def clear_selection(self):
+        """
+        Clear current selection.
+        
+        This uses the ClearSelection API endpoint to deselect all items
+        in the schematic editor.
+        
+        Returns:
+            dict: Dictionary containing operation result
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from google.protobuf.empty_pb2 import Empty
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # Create ClearSelection request
+            request = schematic_commands_pb2.ClearSelection()
+            request.schematic.CopyFrom(doc_spec)
+            
+            # Send the actual IPC command to KiCad
+            # ClearSelection returns Empty response
+            response = self.send_schematic_command("ClearSelection", request)
+            
+            return {
+                "api_endpoint": "ClearSelection",
+                "connection_status": "SUCCESS - Selection cleared",
+                "result": "✅ All items deselected",
+                "next_actions": [
+                    "select_items() to select specific items",
+                    "select_by_type() to select by type",
+                    "get_selection() to verify empty selection"
+                ]
+            }
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "ClearSelection",
+                "connection_status": "FAILED - Clear selection error",
+                "error": f"Failed to clear selection: {str(e)}",
+                "troubleshooting": [
+                    "1. Ensure KiCad is running with a schematic open",
+                    "2. Check that KiCad API has ClearSelection handler",
+                    "3. Verify Python bindings are up to date",
+                    "4. Try selecting and deselecting items manually"
+                ]
+            }
+    
+    def select_by_type(self, item_types: list[str]):
+        """
+        Select all items of specified types.
+        
+        This is a convenience method that combines GetSchematicItems and AddToSelection
+        to select all items matching the specified types (e.g., 'Symbol', 'Wire', 'Junction').
+        
+        Args:
+            item_types: List of item type names to select (e.g., ['Symbol', 'Wire'])
+            
+        Returns:
+            dict: Dictionary containing selection results
+        """
+        try:
+            # Import protocol buffer messages
+            from kipy.proto.schematic import schematic_commands_pb2
+            from kipy.proto.schematic import schematic_types_pb2
+            from kipy.proto.common.types import base_types_pb2
+            
+            if not item_types or len(item_types) == 0:
+                return {
+                    "error": "No item types provided",
+                    "required": "List of item type names to select",
+                    "example": "select_by_type(['Symbol', 'Wire'])",
+                    "available_types": ['Symbol', 'Wire', 'Junction', 'LocalLabel', 'GlobalLabel']
+                }
+            
+            # Get the active schematic document
+            doc_spec = self.get_active_schematic_document()
+            if not doc_spec:
+                return {
+                    "error": "No schematic document available",
+                    "troubleshooting": [
+                        "Ensure KiCad is running with a schematic open",
+                        "Check that schematic is active in Eeschema"
+                    ]
+                }
+            
+            # First, get all schematic items
+            get_items_request = schematic_commands_pb2.GetSchematicItems()
+            get_items_request.schematic.CopyFrom(doc_spec)
+            
+            items_response = self.send_schematic_command("GetSchematicItems", get_items_request)
+            
+            # Filter items by type and collect their IDs
+            items_to_select = []
+            type_counts = {}
+            
+            for item in items_response.items:
+                item_type = item.type_url.split('.')[-1] if '.' in item.type_url else item.type_url
+                
+                if item_type in item_types:
+                    # Extract ID based on type
+                    item_id = None
+                    
+                    if item_type == 'Symbol':
+                        symbol = schematic_types_pb2.Symbol()
+                        if item.Unpack(symbol):
+                            item_id = symbol.id.value
+                    elif item_type == 'Wire':
+                        wire = schematic_types_pb2.Wire()
+                        if item.Unpack(wire):
+                            item_id = wire.id.value
+                    elif item_type == 'Junction':
+                        junction = schematic_types_pb2.Junction()
+                        if item.Unpack(junction):
+                            item_id = junction.id.value
+                    elif item_type == 'LocalLabel':
+                        label = schematic_types_pb2.LocalLabel()
+                        if item.Unpack(label):
+                            item_id = label.id.value
+                    
+                    if item_id:
+                        items_to_select.append(item_id)
+                        type_counts[item_type] = type_counts.get(item_type, 0) + 1
+            
+            if not items_to_select:
+                return {
+                    "api_endpoint": "select_by_type",
+                    "connection_status": "SUCCESS - No matching items found",
+                    "requested_types": item_types,
+                    "items_found": 0,
+                    "result": "⚠️ No items of specified types found in schematic"
+                }
+            
+            # Clear existing selection first
+            clear_request = schematic_commands_pb2.ClearSelection()
+            clear_request.schematic.CopyFrom(doc_spec)
+            self.send_schematic_command("ClearSelection", clear_request)
+            
+            # Now add all matching items to selection
+            select_request = schematic_commands_pb2.AddToSelection()
+            select_request.schematic.CopyFrom(doc_spec)
+            
+            for item_id in items_to_select:
+                kiid = base_types_pb2.KIID()
+                kiid.value = item_id
+                select_request.item_ids.append(kiid)
+            
+            # Send the selection request
+            select_response = self.send_schematic_command("AddToSelection", select_request)
+            
+            return {
+                "api_endpoint": "select_by_type",
+                "connection_status": "SUCCESS - Items selected by type",
+                "requested_types": item_types,
+                "items_selected": len(items_to_select),
+                "selection_count": select_response.selection_count,
+                "type_breakdown": type_counts,
+                "result": f"✅ {len(items_to_select)} items selected",
+                "next_actions": [
+                    "get_selection() to see selected items",
+                    "Perform bulk operations on selection",
+                    "clear_selection() to deselect all"
+                ]
+            }
+            
+        except Exception as e:
+            return {
+                "api_endpoint": "select_by_type",
+                "connection_status": "FAILED - Type selection error",
+                "error": f"Failed to select by type: {str(e)}",
+                "requested_types": item_types if item_types else [],
+                "troubleshooting": [
+                    "1. Ensure valid type names are used",
+                    "2. Check that schematic contains items of those types",
+                    "3. Verify API has all required handlers",
+                    "4. Try get_schematic_items() to see available types"
+                ]
+            }
 
 
 class SchematicAnalyzeTools:

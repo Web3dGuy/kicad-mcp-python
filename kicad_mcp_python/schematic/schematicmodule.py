@@ -85,6 +85,20 @@ class SchematicTool:
             elif command_name == "GetConnectionPoints":
                 response = self.kicad._client.send(request, schematic_commands_pb2.GetConnectionPointsResponse)
                 return response
+            # Selection Management System - Phase 1 Foundational Optimizations
+            elif command_name == "GetSelection":
+                response = self.kicad._client.send(request, schematic_commands_pb2.SelectionResponse)
+                return response
+            elif command_name == "AddToSelection":
+                response = self.kicad._client.send(request, schematic_commands_pb2.SelectionResponse)
+                return response
+            elif command_name == "RemoveFromSelection":
+                response = self.kicad._client.send(request, schematic_commands_pb2.SelectionResponse)
+                return response
+            elif command_name == "ClearSelection":
+                from google.protobuf.empty_pb2 import Empty
+                response = self.kicad._client.send(request, Empty)
+                return response
             else:
                 raise ValueError(f"Unsupported schematic command: {command_name}")
                 
