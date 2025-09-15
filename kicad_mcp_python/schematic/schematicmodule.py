@@ -99,6 +99,16 @@ class SchematicTool:
                 from google.protobuf.empty_pb2 import Empty
                 response = self.kicad._client.send(request, Empty)
                 return response
+            # Symbol Placement System - Phase 2 Symbol Placement
+            elif command_name == "PlaceSymbol":
+                response = self.kicad._client.send(request, schematic_commands_pb2.PlaceSymbolResponse)
+                return response
+            elif command_name == "GetSymbolLibraries":
+                response = self.kicad._client.send(request, schematic_commands_pb2.GetSymbolLibrariesResponse)
+                return response
+            elif command_name == "SearchSymbols":
+                response = self.kicad._client.send(request, schematic_commands_pb2.SearchSymbolsResponse)
+                return response
             else:
                 raise ValueError(f"Unsupported schematic command: {command_name}")
                 
