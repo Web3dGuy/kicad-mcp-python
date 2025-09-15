@@ -276,15 +276,28 @@ class SchematicAnalyzer(ToolManager, SchematicTool):
                         label = schematic_types_pb2.HierLabel()
 
                     if item.Unpack(label):
+                        # Apply same scaling workaround as wires (Section 5 fix)
+                        scale_factor = 1
+                        if abs(label.position.x_nm) < 10_000_000 and abs(label.position.y_nm) < 10_000_000:
+                            scale_factor = 100
+
+                        # Extract text from nested structure: label.text.text.text
+                        text_content = ""
+                        if hasattr(label, 'text') and hasattr(label.text, 'text'):
+                            if hasattr(label.text.text, 'text'):
+                                text_content = label.text.text.text
+                            elif isinstance(label.text.text, str):
+                                text_content = label.text.text
+
                         label_data = {
                             "id": label.id.value,
                             "type": item_type,
-                            "text": label.text.text if hasattr(label.text, 'text') else str(label.text),
+                            "text": text_content,
                             "position": {
-                                "x_nm": label.position.x_nm,
-                                "y_nm": label.position.y_nm,
-                                "x_mm": label.position.x_nm / 1_000_000,
-                                "y_mm": label.position.y_nm / 1_000_000
+                                "x_nm": label.position.x_nm * scale_factor,
+                                "y_nm": label.position.y_nm * scale_factor,
+                                "x_mm": (label.position.x_nm * scale_factor) / 1_000_000,
+                                "y_mm": (label.position.y_nm * scale_factor) / 1_000_000
                             }
                         }
                         labels.append(label_data)

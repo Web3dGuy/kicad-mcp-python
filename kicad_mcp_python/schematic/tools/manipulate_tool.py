@@ -3,6 +3,12 @@ from typing import Dict
 from ..schematicmodule import SchematicTool
 from ...core.ActionFlowManager import ActionFlowManager
 from ...core.mcp_manager import ToolManager
+from ...utils.validation import (
+    ValidationError,
+    validate_wire_creation_args,
+    validate_label_creation_args,
+    validate_junction_creation_args
+)
 
 from mcp.server.fastmcp import FastMCP
 
@@ -332,62 +338,41 @@ class SchematicManipulator(ToolManager, SchematicTool):
     def draw_wire_step_3(self, args: dict):
         """
         Draws a wire between the specified points using the DrawWire API.
-        
+
         Args:
             args (dict): Wire parameters containing:
                 - start_point: dict with x_nm and y_nm
                 - end_point: dict with x_nm and y_nm
                 - width (optional): wire width in nanometers
-        
+
         Returns:
             dict: Result of the wire drawing operation
-            
+
         Next action:
             get_schematic_status (to verify the wire was created)
         """
         try:
-            # Use cached parameter validation - Phase 1 Optimization
-            if hasattr(self, 'cached_parameters') and 'required' in self.cached_parameters:
-                missing_params = [param for param in self.cached_parameters["required"] if param not in args]
-                if missing_params:
-                    return {
-                        "error": "Missing required parameters",
-                        "required": self.cached_parameters["required"],
-                        "missing": missing_params,
-                        "provided": list(args.keys()),
-                        "suggestion": "Use draw_wire_step_2() to see parameter requirements",
-                        "optimization": "✅ Using cached parameter validation for faster processing"
-                    }
-            else:
-                # Fallback to original validation if cache not available
-                if "start_point" not in args or "end_point" not in args:
-                    return {
-                        "error": "Missing required parameters",
-                        "required": ["start_point", "end_point"],
-                        "provided": list(args.keys()),
-                        "suggestion": "Use draw_wire_step_2() to see parameter requirements"
-                    }
-            
-            start = args["start_point"]
-            end = args["end_point"]
-            
-            # Validate coordinate structure
-            if not all(k in start for k in ["x_nm", "y_nm"]):
-                return {
-                    "error": "Invalid start_point structure",
-                    "expected": {"x_nm": "integer", "y_nm": "integer"},
-                    "provided": start
-                }
-            
-            if not all(k in end for k in ["x_nm", "y_nm"]):
-                return {
-                    "error": "Invalid end_point structure",
-                    "expected": {"x_nm": "integer", "y_nm": "integer"},
-                    "provided": end
-                }
-            
-            # Get wire width (optional)
-            width = args.get("width", 0)
+            # Section 5 Enhanced Validation - Comprehensive wire validation
+            try:
+                validated_args = validate_wire_creation_args(args)
+                start = validated_args["start_point"]
+                end = validated_args["end_point"]
+                width = validated_args["width"]
+                length_mm = validated_args["length_mm"]
+            except ValidationError as ve:
+                validation_error = ve.to_dict()
+                validation_error.update({
+                    "workflow": "Draw Wire - Step 3 of 3",
+                    "status": "validation_failed",
+                    "section_5_enhancement": "✅ Comprehensive validation prevents silent data corruption",
+                    "prevention": [
+                        "Zero-length wire detection",
+                        "Coordinate bounds checking",
+                        "Wire width validation",
+                        "Helpful error messages with context"
+                    ]
+                })
+                return validation_error
             
             # Call the DrawWire API
             from kipy.proto.schematic import schematic_commands_pb2
@@ -423,8 +408,9 @@ class SchematicManipulator(ToolManager, SchematicTool):
                     "wire_id": response.wire_id.value if response.wire_id.value else None,
                     "start_point": f"({start['x_nm']/1000000:.1f}mm, {start['y_nm']/1000000:.1f}mm)",
                     "end_point": f"({end['x_nm']/1000000:.1f}mm, {end['y_nm']/1000000:.1f}mm)",
-                    "length_mm": ((end['x_nm'] - start['x_nm'])**2 + (end['y_nm'] - start['y_nm'])**2)**0.5 / 1000000,
-                    "optimization": "✅ Using cached parameter validation - 67% performance improvement achieved",
+                    "length_mm": length_mm,
+                    "validation": "✅ Section 5 comprehensive validation passed",
+                    "section_5_enhancement": "Prevents silent data corruption with coordinate bounds, geometry validation",
                     "next_actions": [
                         "get_schematic_status() to verify wire creation",
                         "draw_wire_step_1() to draw another wire",
@@ -459,26 +445,31 @@ class SchematicManipulator(ToolManager, SchematicTool):
             }
     
     def _validate_create_args(self, item_type: str, args: dict):
-        """Validate that required parameters are provided for item creation."""
-        if item_type == "Junction":
-            if "position" not in args:
+        """Validate that required parameters are provided for item creation using Section 5 enhanced validation."""
+        try:
+            if item_type == "Junction":
+                validated_args = validate_junction_creation_args(args)
+                return None  # No error - validation passed
+            elif item_type in ["LocalLabel", "GlobalLabel"]:
+                validated_args = validate_label_creation_args(args, item_type)
+                return None  # No error - validation passed
+            elif item_type == "Text":
+                # For text items, use label validation as a base
+                validated_args = validate_label_creation_args(args, "Text")
+                return None  # No error - validation passed
+            else:
                 return {
-                    "error": "Missing required parameter: position",
-                    "required": "position dict with x_nm and y_nm"
+                    "error": f"Unsupported item type: {item_type}",
+                    "supported_types": ["Junction", "LocalLabel", "GlobalLabel", "Text"],
+                    "section_5_enhancement": "✅ Type validation prevents invalid API calls"
                 }
-        elif item_type in ["LocalLabel", "GlobalLabel"]:
-            if "position" not in args or "text" not in args:
-                return {
-                    "error": "Missing required parameters: position and text",
-                    "required": ["position", "text"]
-                }
-        elif item_type == "Text":
-            if "position" not in args or "text" not in args:
-                return {
-                    "error": "Missing required parameters: position and text",
-                    "required": ["position", "text"]
-                }
-        return None
+        except ValidationError as ve:
+            validation_error = ve.to_dict()
+            validation_error.update({
+                "item_type": item_type,
+                "section_5_enhancement": "✅ Comprehensive validation prevents silent data corruption"
+            })
+            return validation_error
     
     def _create_junction(self, doc_spec, args):
         """Create a junction using CreateSchematicItems API."""
@@ -914,6 +905,21 @@ class SchematicManipulator(ToolManager, SchematicTool):
             Result of junction creation
         """
         try:
+            # Section 5 Enhanced Validation - Validate arguments first
+            args = {
+                "position": {"x_nm": x_nm, "y_nm": y_nm}
+            }
+
+            try:
+                validated_args = validate_junction_creation_args(args)
+            except ValidationError as ve:
+                validation_error = ve.to_dict()
+                validation_error.update({
+                    "function": "place_junction_direct",
+                    "section_5_enhancement": "✅ Direct function validation prevents coordinate issues"
+                })
+                return validation_error
+
             # Use cached document for performance, validate cache first
             if not self._validate_cache() or self.cached_document is None:
                 doc_spec = self.get_active_schematic_document()
@@ -926,18 +932,16 @@ class SchematicManipulator(ToolManager, SchematicTool):
             else:
                 doc_spec = self.cached_document
 
-            # Use internal junction creation method directly
-            args = {
-                "position": {"x_nm": x_nm, "y_nm": y_nm}
-            }
+            # Use internal junction creation method directly - use validated position
             if diameter != 0:
-                args["color"] = {"r": 0, "g": 0, "b": 0, "a": 0}  # Add color if custom diameter
+                validated_args["color"] = {"r": 0, "g": 0, "b": 0, "a": 0}  # Add color if custom diameter
 
-            result = self._create_junction(doc_spec, args)
+            result = self._create_junction(doc_spec, validated_args)
 
             # Enhance result with direct function info
             if "status" in result and result["status"] == "success":
                 result["performance_note"] = "Direct function - single API call (67% faster than multi-step)"
+                result["section_5_enhancement"] = "✅ Comprehensive validation prevents coordinate issues"
 
             return result
 
@@ -961,6 +965,24 @@ class SchematicManipulator(ToolManager, SchematicTool):
             Result of wire creation
         """
         try:
+            # Section 5 Enhanced Validation - Validate arguments first
+            args = {
+                "start_point": start_pos,
+                "end_point": end_pos
+            }
+            if width > 0:
+                args["width"] = width
+
+            try:
+                validated_args = validate_wire_creation_args(args)
+            except ValidationError as ve:
+                validation_error = ve.to_dict()
+                validation_error.update({
+                    "function": "draw_wire_direct",
+                    "section_5_enhancement": "✅ Direct function validation prevents silent failures"
+                })
+                return validation_error
+
             # Use cached document for performance, validate cache first
             if not self._validate_cache() or self.cached_document is None:
                 doc_spec = self.get_active_schematic_document()
@@ -973,19 +995,12 @@ class SchematicManipulator(ToolManager, SchematicTool):
             else:
                 doc_spec = self.cached_document
 
-            # Use internal wire drawing method directly
-            args = {
-                "start_point": start_pos,
-                "end_point": end_pos
-            }
-            if width > 0:
-                args["width"] = width
-
-            result = self._create_wire_internal(doc_spec, args)
+            result = self._create_wire_internal(doc_spec, validated_args)
 
             # Enhance result with direct function info
             if "status" in result and result["status"] == "success":
                 result["performance_note"] = "Direct function - single API call (70% faster than multi-step)"
+                result["section_5_enhancement"] = "✅ Comprehensive validation prevents silent data corruption"
 
             return result
 
@@ -1008,6 +1023,22 @@ class SchematicManipulator(ToolManager, SchematicTool):
             label_type: Label type ("LocalLabel", "GlobalLabel", "HierLabel")
         """
         try:
+            # Section 5 Enhanced Validation - Validate arguments first
+            args = {
+                "position": {"x_nm": x_nm, "y_nm": y_nm},
+                "text": text
+            }
+
+            try:
+                validated_args = validate_label_creation_args(args, label_type)
+            except ValidationError as ve:
+                validation_error = ve.to_dict()
+                validation_error.update({
+                    "function": "place_label_direct",
+                    "section_5_enhancement": "✅ Direct function validation prevents empty text and coordinate issues"
+                })
+                return validation_error
+
             # Use cached document for performance, validate cache first
             if not self._validate_cache() or self.cached_document is None:
                 doc_spec = self.get_active_schematic_document()
@@ -1020,17 +1051,12 @@ class SchematicManipulator(ToolManager, SchematicTool):
             else:
                 doc_spec = self.cached_document
 
-            # Use internal label creation method directly
-            args = {
-                "position": {"x_nm": x_nm, "y_nm": y_nm},
-                "text": text
-            }
-
-            result = self._create_label(doc_spec, label_type, args)
+            result = self._create_label(doc_spec, label_type, validated_args)
 
             # Enhance result with direct function info
             if "status" in result and result["status"] == "success":
                 result["performance_note"] = "Direct function - single API call (67% faster than multi-step)"
+                result["section_5_enhancement"] = "✅ Comprehensive validation prevents empty labels and coordinate issues"
 
             return result
 
