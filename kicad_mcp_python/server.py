@@ -10,7 +10,7 @@ from typing import Callable, List
 from mcp.server.fastmcp import FastMCP
 
 from kicad_mcp_python.pcb.tools import ManipulationTools, AnalyzeTools
-from kicad_mcp_python.schematic.tools import SchematicManipulationTools, SchematicAnalyzeTools, SchematicSmartRoutingTools
+from kicad_mcp_python.schematic.tools import SchematicManipulationTools, SchematicAnalyzeTools, SchematicSmartRoutingTools, SchematicLibraryTools
 
 
 # Import context management
@@ -227,6 +227,7 @@ def create_server() -> FastMCP:
     SchematicManipulationTools.register_tools(mcp)
     SchematicAnalyzeTools.register_tools(mcp)
     SchematicSmartRoutingTools.register_tools(mcp)
+    SchematicLibraryTools.register_tools(mcp)
     register_cleanup = setup_graceful_shutdown(mcp)
     
     # Register KiCad-related cleanup handlers

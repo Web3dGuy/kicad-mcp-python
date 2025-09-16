@@ -1555,7 +1555,7 @@ class SchematicManipulator(ToolManager, SchematicTool):
             }
 
     def search_symbols(self, search_text: str, libraries: list = None,
-                      power_only: bool = False, max_results: int = 50):
+                      power_only: bool = False, max_results: int = 1000):
         """
         Search symbols across libraries.
 
@@ -1563,7 +1563,7 @@ class SchematicManipulator(ToolManager, SchematicTool):
             search_text: Search term (matches name/description)
             libraries: Restrict to specific libraries (empty = all)
             power_only: Filter for power symbols
-            max_results: Limit results (default: 50)
+            max_results: Limit results (default: 1000, removed artificial limits)
 
         Returns:
             dict: Symbol search results

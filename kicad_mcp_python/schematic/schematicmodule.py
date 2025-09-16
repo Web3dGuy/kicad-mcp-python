@@ -15,7 +15,8 @@ class SchematicTool:
         """
         try:
             # Initialize the KiCad client with IPC connection
-            self.kicad = KiCad()
+            # Use 60-second timeout to handle comprehensive library loading (like UI)
+            self.kicad = KiCad(timeout_ms=60000)
             # Test connection with a ping
             self.kicad.ping()
             print(f"Successfully connected to KiCad IPC server")
@@ -109,6 +110,15 @@ class SchematicTool:
             elif command_name == "SearchSymbols":
                 response = self.kicad._client.send(request, schematic_commands_pb2.SearchSymbolsResponse)
                 return response
+            elif command_name == "PreloadSymbolLibraries":
+                response = self.kicad._client.send(request, schematic_commands_pb2.PreloadSymbolLibrariesResponse)
+                return response
+            elif command_name == "GetLibraryLoadStatus":
+                response = self.kicad._client.send(request, schematic_commands_pb2.GetLibraryLoadStatusResponse)
+                return response
+            elif command_name == "RefreshSymbolLibraries":
+                response = self.kicad._client.send(request, schematic_commands_pb2.RefreshSymbolLibrariesResponse)
+                return response
             else:
                 raise ValueError(f"Unsupported schematic command: {command_name}")
                 
@@ -151,3 +161,92 @@ class SchematicTool:
             print(f"Error sending editor command {command_name}: {e}")
             # Let the error propagate to show real connection issues
             raise e
+
+    def manage_symbol_libraries(
+        self,
+        mode: str = "status",
+        library_names: list[str] = [],
+        force_reload: bool = False
+    ) -> dict:
+        """
+        Unified symbol library management tool that matches KiCad UI behavior.
+
+        This consolidates library loading, status checking, and refresh operations
+        into a single tool that mirrors how KiCad's schematic editor works.
+
+        Args:
+            mode: Operation mode - "load", "status", or "refresh"
+                - "load": Comprehensive library loading (like first symbol button press)
+                - "status": Check which libraries are currently loaded
+                - "refresh": Refresh externally modified libraries
+            library_names: Specific libraries to target (empty = all libraries)
+            force_reload: Force reload even if already loaded (optional, no artificial limits)
+
+        Returns:
+            Dictionary with operation results, statistics, and timing
+        """
+        try:
+            if mode == "load":
+                # Comprehensive loading - matches UI behavior when pressing symbol button first time
+                request = schematic_commands_pb2.PreloadSymbolLibraries()
+                for lib_name in library_names:
+                    request.library_names.append(lib_name)
+                request.force_reload = force_reload
+
+                response = self.send_schematic_command("PreloadSymbolLibraries", request)
+
+                result = {
+                    "mode": "load",
+                    "operation": "Comprehensive library loading (UI-matching behavior)",
+                    "loaded_libraries": response.loaded_libraries,
+                    "failed_libraries": list(response.failed_libraries),
+                    "loading_time_seconds": response.loading_time_seconds,
+                    "note": "No artificial limits - loads all libraries like KiCad UI (60-second timeout protection)"
+                }
+
+                if response.error:
+                    result["error"] = response.error
+
+                return result
+
+            elif mode == "status":
+                # Check current library loading status
+                request = schematic_commands_pb2.GetLibraryLoadStatus()
+                response = self.send_schematic_command("GetLibraryLoadStatus", request)
+
+                return {
+                    "mode": "status",
+                    "operation": "Library loading status check",
+                    "symbols_loaded": response.symbols_loaded,
+                    "footprints_loaded": response.footprints_loaded,
+                    "symbol_library_count": response.symbol_library_count,
+                    "footprint_library_count": response.footprint_library_count,
+                    "loaded_symbol_libraries": list(response.loaded_symbol_libraries)
+                }
+
+            elif mode == "refresh":
+                # Refresh libraries to pick up external changes
+                request = schematic_commands_pb2.RefreshSymbolLibraries()
+                for lib_name in library_names:
+                    request.library_names.append(lib_name)
+
+                response = self.send_schematic_command("RefreshSymbolLibraries", request)
+
+                result = {
+                    "mode": "refresh",
+                    "operation": "Library refresh for external changes",
+                    "refreshed_libraries": response.refreshed_libraries,
+                    "failed_libraries": list(response.failed_libraries),
+                    "refresh_time_seconds": response.refresh_time_seconds
+                }
+
+                if response.error:
+                    result["error"] = response.error
+
+                return result
+
+            else:
+                return {"error": f"Invalid mode '{mode}'. Use 'load', 'status', or 'refresh'"}
+
+        except Exception as e:
+            return {"error": f"Failed to manage libraries (mode: {mode}): {e}"}
