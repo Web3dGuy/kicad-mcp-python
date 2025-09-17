@@ -1393,7 +1393,8 @@ class SchematicManipulator(ToolManager, SchematicTool):
 
     def place_symbol_direct(self, library_name: str, symbol_name: str, x_nm: int, y_nm: int,
                            reference: str = None, value: str = None, rotation: int = 0,
-                           unit: int = 1, auto_annotate: bool = True):
+                           unit: int = 1, auto_annotate: bool = True, mirrored_x: bool = False,
+                           mirrored_y: bool = False):
         """
         Direct symbol placement - single call with all parameters.
 
@@ -1409,6 +1410,8 @@ class SchematicManipulator(ToolManager, SchematicTool):
             rotation: Rotation angle (0, 90, 180, 270)
             unit: Unit number for multi-unit symbols
             auto_annotate: Auto-generate reference if not provided
+            mirrored_x: Horizontal mirror (flip left-right)
+            mirrored_y: Vertical mirror (flip up-down)
 
         Returns:
             dict: Symbol placement result
@@ -1428,6 +1431,8 @@ class SchematicManipulator(ToolManager, SchematicTool):
             request.orientation = rotation
             request.unit = unit
             request.auto_annotate = auto_annotate
+            request.mirrored_x = mirrored_x
+            request.mirrored_y = mirrored_y
 
             if reference:
                 request.reference = reference
