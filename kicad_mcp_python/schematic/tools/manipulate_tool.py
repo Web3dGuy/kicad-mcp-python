@@ -1255,7 +1255,8 @@ class SchematicManipulator(ToolManager, SchematicTool):
             }
 
     def place_symbol_step_3(self, symbol_name: str, x_nm: int, y_nm: int,
-                           reference: str = None, value: str = None, rotation: int = 0):
+                           reference: str = None, value: str = None, rotation: int = 0,
+                           mirrored_x: bool = False, mirrored_y: bool = False):
         """
         Step 3: Place selected symbol with properties.
 
@@ -1265,6 +1266,8 @@ class SchematicManipulator(ToolManager, SchematicTool):
             reference: Reference designator (optional - auto-annotate if None)
             value: Value field text (optional)
             rotation: Rotation angle in degrees (0, 90, 180, 270)
+            mirrored_x: Horizontal mirror (flip left-right)
+            mirrored_y: Vertical mirror (flip up-down)
 
         Returns:
             dict: Symbol placement result
@@ -1326,6 +1329,10 @@ class SchematicManipulator(ToolManager, SchematicTool):
                 request.reference = reference
             if value:
                 request.value = value
+
+            # Set mirroring parameters
+            request.mirrored_x = mirrored_x
+            request.mirrored_y = mirrored_y
 
             # Enable auto-annotation if no reference provided
             request.auto_annotate = (reference is None or reference == "")
